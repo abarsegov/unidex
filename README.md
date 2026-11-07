@@ -63,7 +63,7 @@ If unidex is useful to you, a star on GitHub helps other people find it.
 - the [Waveshare ESP32-S3-ePaper-1.54](https://docs.waveshare.com/ESP32-S3-ePaper-1.54) board, **V2** (or a
   ready-made unidex: [join the wait list](https://www.unidex.shop));
 - a USB-C **data** cable and a computer with Chrome or Edge;
-- a **micro SD card** (FAT32) for your files;
+- a **micro SD card** for your files. This fork supports FAT32 and exFAT when [built from source](docs/DEVELOPING.md#building-from-source). The upstream web installer requires FAT32.
 - optionally, a 3.7 V LiPo battery on the board's battery connector, so you can use it away from USB.
 
 **Then:**
@@ -423,7 +423,7 @@ off so the battery isn't drained further. Plug in USB to charge it, then press P
 
 - **The website can't find the device.** It's asleep, so press a button and try again. If it's a brand-new board
   (or one with other firmware), unplug it, hold **BOOT** while you plug it back in, let go, then try again.
-- **"No SD card".** Check that the card is FAT32 and pushed fully into the slot. Timetable, Reminders, Badge and
+- **"No SD card".** Push the card fully into the slot. Use FAT32 with the upstream firmware, or FAT32 or exFAT with this fork. Timetable, Reminders, Badge and
   Apps need it.
 - **"App error".** The app hit a bug or one of its limits; the message says where. Tell its author (open an issue
   on [unidex-apps](https://github.com/Forrest404/unidex-apps)), or offload or delete it with **hold B** in Apps.
