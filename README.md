@@ -354,6 +354,7 @@ exit after unplugging USB, hold **PWR** for two seconds and release it.
 
 For automatic return when USB power disappears, connect the optional VBUS sense divider to **GP1 (J1 pin 1)**
 with the board unpowered. Use a USB data passthrough breakout for 5 V VBUS and share ground with **J1 pin 4 or 6**.
+Keep the breakout on the device side of the unplug point so its VBUS goes low when the cable is removed.
 Connect VBUS to GP1 through a 10 kΩ resistor and GP1 to GND through a second 10 kΩ resistor. GP1 sees about 2.5 V
 with USB power present. The reader shows **USB voltage monitored** once the divider is detected. It then returns
 to Settings when VBUS drops. A sleeping host that keeps supplying VBUS leaves the reader open.
