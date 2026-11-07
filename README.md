@@ -349,7 +349,8 @@ timeouts apply as for phone setup.
 #### Use the microSD card as a USB drive
 
 Connect the USB data cable and choose **Settings → USB card reader**. Unidex restarts and Windows can open the
-card as a removable drive. Use **Eject** on the drive in File Explorer, then press **PWR** on Unidex to return.
+card as a removable drive. Use **Eject** on the drive in File Explorer and Unidex returns to Settings. For a manual
+exit after unplugging USB, hold **PWR** for two seconds and release it.
 
 ## Apps and plugins: make your own
 

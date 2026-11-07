@@ -6,3 +6,5 @@ void cardReaderRequest();
 // After powerInit, before Serial/launcher/storage initialization. True owns this entire boot.
 bool cardReaderBegin();
 void cardReaderPoll();
+// Consume the one-shot return destination after the normal launcher starts.
+bool cardReaderTakeReturnToSettings();

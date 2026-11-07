@@ -5,6 +5,7 @@ bool cardReaderAvailable() { return false; }
 void cardReaderRequest() {}
 bool cardReaderBegin() { return false; }
 void cardReaderPoll() {}
+bool cardReaderTakeReturnToSettings() { return false; }
 #else
 #include <Arduino.h>
 #include <USB.h>
@@ -21,15 +22,32 @@ void cardReaderPoll() {}
 // Keep normal firmware's HWCDC/Web Serial. TinyUSB takes the internal PHY only
 // in a separate boot, before HWCDC or any filesystem/application can start.
 static constexpr uint32_t READER_MAGIC = 0x554D5343;
+static constexpr uint32_t RETURN_MAGIC = 0x554D5254;
+static constexpr uint32_t EXIT_HOLD_MS = 2000, EJECT_GRACE_MS = 1000;
 RTC_NOINIT_ATTR static uint32_t requested;
 static sdmmc_card_t card;
 static DMA_ATTR uint8_t sector[512];
 static std::atomic<bool> present{false}, ejected{false}, ioError{false};
+static std::atomic<uint32_t> activeOperations{0}, ejectedAt{0};
 static bool failed, preventRemoval, usbStarted;
-static bool buttonDown;
-static uint32_t buttonAt;
+static bool buttonDown, buttonRaw, exitArmed, returnToSettings;
+static uint32_t buttonAt, pressedAt;
+
+// Increment BEFORE checking the admission gate. After the loop closes it, any
+// later callback can only reject the operation; earlier raw operations drain.
+// Include SYNCHRONIZE CACHE's card status command in the same accounting.
+struct CardOperation {
+  CardOperation() { activeOperations.fetch_add(1); }
+  ~CardOperation() { activeOperations.fetch_sub(1); }
+};
 
 bool cardReaderAvailable() { return true; }
+
+bool cardReaderTakeReturnToSettings() {
+  const bool returning = returnToSettings;
+  returnToSettings = false;
+  return returning;
+}
 
 void cardReaderRequest() {
   storageEnd();
@@ -48,17 +66,22 @@ static void drawReader() {
     drawCentered("PWR: return", 140);
   } else if (ejected.load()) {
     drawCentered("Safely ejected", 70);
-    drawCentered("PWR: return", 140);
+    drawCentered("Returning to Settings", 115);
+  } else if (exitArmed) {
+    drawCentered("USB ejected/unplugged?", 65);
+    drawCentered("Release PWR to return", 100);
   } else {
-    drawCentered(ioError.load() ? "Card I/O error" : "microSD on computer", 60);
-    drawCentered("Eject drive on PC", 93);
-    drawCentered("before returning", 115);
-    drawCentered("Keep USB connected", 143);
+    drawCentered(ioError.load() ? "Card I/O error" : "microSD on computer", 55);
+    drawCentered("Eject drive on PC", 85);
+    drawCentered("Unplug USB, then", 110);
+    drawCentered("hold PWR 2s + release", 135);
+    drawCentered("to return to Settings", 155);
   }
 }
 
 static int32_t transfer(uint8_t lun, uint32_t lba, uint32_t offset,
                         void *buffer, uint32_t bytes, bool write) {
+  CardOperation operation;
   if (lun || !present.load()) {
     tud_msc_set_sense(lun, SCSI_SENSE_NOT_READY, 0x3a, 0);
     return -1;
@@ -131,6 +154,7 @@ bool tud_msc_start_stop_cb(uint8_t lun, uint8_t, bool start, bool eject) {
     // All writes completed synchronously before this command. Stop accepting
     // new I/O before publishing eject to the UI; no automatic remount.
     present.store(false);
+    ejectedAt.store(millis());
     ejected.store(true);
   }
   // One shot: reinsertion requires a new reader boot.
@@ -138,6 +162,7 @@ bool tud_msc_start_stop_cb(uint8_t lun, uint8_t, bool start, bool eject) {
   return true;
 }
 int32_t tud_msc_scsi_cb(uint8_t lun, const uint8_t cmd[16], void *, uint16_t) {
+  CardOperation operation;
   if (!tud_msc_test_unit_ready_cb(lun)) return -1;
   if (cmd[0] == SCSI_CMD_PREVENT_ALLOW_MEDIUM_REMOVAL) {
     preventRemoval = (cmd[4] & 3) != 0;
@@ -166,6 +191,7 @@ static uint16_t descriptor(uint8_t *dst, uint8_t *itf) {
 
 bool cardReaderBegin() {
   const bool enter = esp_reset_reason() == ESP_RST_SW && requested == READER_MAGIC;
+  returnToSettings = esp_reset_reason() == ESP_RST_SW && requested == RETURN_MAGIC;
   requested = 0;  // crash/reset/power loss returns to the app, never a boot loop
   if (!enter) {
     // The RTC PHY selector can survive a software reset. Restore the same
@@ -176,10 +202,12 @@ bool cardReaderBegin() {
   }
   setCpuFrequencyMhz(240);
   // Do not call inputInit: its emergency two-button restart would cut off a
-  // mounted writable drive. Only PWR after host eject is a normal exit here.
+  // mounted writable drive. The dedicated PWR exit below drains raw I/O first.
+  pinMode(0, INPUT_PULLUP);
   pinMode(18, INPUT_PULLUP);
-  buttonDown = digitalRead(18) == LOW;
+  buttonRaw = buttonDown = digitalRead(18) == LOW;
   buttonAt = millis();
+  pressedAt = buttonAt;
   displayInit(true);
   sdmmc_host_t host = SDMMC_HOST_DEFAULT();
   host.flags = SDMMC_HOST_FLAG_1BIT;
@@ -207,6 +235,18 @@ bool cardReaderBegin() {
   return true;
 }
 
+static void returnToApp() {
+  present.store(false);
+  // Never restart during a raw SD read/write/status operation, even on the
+  // deliberate fallback. No timeout: abandoning an in-flight write is unsafe.
+  while (activeOperations.load() != 0) delay(10);
+  if (usbStarted) tud_disconnect();
+  delay(250);
+  while (digitalRead(0) == LOW) delay(10);  // release the BOOT strapping pin before restart
+  requested = RETURN_MAGIC;
+  ESP.restart();
+}
+
 void cardReaderPoll() {
   static bool shownEjected, shownError;
   if (shownEjected != ejected.load() || shownError != ioError.load()) {
@@ -214,17 +254,27 @@ void cardReaderPoll() {
     shownError = ioError.load();
     displayShow(drawReader, false);
   }
+  const uint32_t now = millis();
+  // Give TinyUSB time to send the successful eject CSW before disconnecting.
+  // Suspend/disconnect notifications are NOT proof that the host ejected:
+  // this board has no VBUS sense, so they never cause an automatic remount.
+  if (ejected.load() && millis() - ejectedAt.load() >= EJECT_GRACE_MS) returnToApp();
   const bool down = digitalRead(18) == LOW;
-  if (down != buttonDown && millis() - buttonAt >= 50) {
-    buttonAt = millis();
-    buttonDown = down;
-    if (!down && (failed || ejected.load())) {
-      // Wait only after a successful host eject or an initialization failure.
-      // No FatFs mount happens until the next boot, with USB MSC gone.
-      if (usbStarted) tud_disconnect();
-      delay(250);
-      ESP.restart();
-    }
+  if (down != buttonRaw) {
+    buttonRaw = down;
+    buttonAt = now;
+  }
+  if (buttonRaw != buttonDown && now - buttonAt >= 50) {
+    buttonDown = buttonRaw;
+    if (buttonDown) pressedAt = now;
+    else if (failed || exitArmed) returnToApp();
+  }
+  // A deliberate fallback for hosts which omit START STOP UNIT on eject, or
+  // an already unplugged cable. Host-cached writes cannot be recovered here;
+  // the display explicitly requires host eject/unplug before this gesture.
+  if (!failed && buttonDown && !exitArmed && now - pressedAt >= EXIT_HOLD_MS) {
+    exitArmed = true;
+    displayShow(drawReader, false);
   }
   delay(10);  // no launcher, sync, background apps, or automatic sleep
 }

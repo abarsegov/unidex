@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include "apps/apps.h"
 #include "core/card_reader.h"
 #include "core/clock.h"
 #include "core/devtools.h"
@@ -34,6 +35,7 @@ void setup() {
   inputInit();
   displayInit(!woke);
   launcherBegin(woke);
+  if (cardReaderTakeReturnToSettings()) launcherOpen(&settingsApp);
   powerOffIfFlat();
   powerWatchdogBegin();
 }
