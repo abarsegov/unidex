@@ -352,6 +352,13 @@ Connect the USB data cable and choose **Settings → USB card reader**. Unidex r
 card as a removable drive. Use **Eject** on the drive in File Explorer and Unidex returns to Settings. For a manual
 exit after unplugging USB, hold **PWR** for two seconds and release it.
 
+For automatic return when USB power disappears, connect the optional VBUS sense divider to **GP1 (J1 pin 1)**
+with the board unpowered. Use a USB data passthrough breakout for 5 V VBUS and share ground with **J1 pin 4 or 6**.
+Connect VBUS to GP1 through a 10 kΩ resistor and GP1 to GND through a second 10 kΩ resistor. GP1 sees about 2.5 V
+with USB power present. The reader shows **USB voltage monitored** once the divider is detected. It then returns
+to Settings when VBUS drops. A sleeping host that keeps supplying VBUS leaves the reader open.
+[Espressif VBUS sensing guide](https://docs.espressif.com/projects/esp-iot-solution/en/latest/usb/usb_overview/usb_device_self_power.html)
+
 ## Apps and plugins: make your own
 
 unidex is built to be taken apart. Beyond the apps above, it runs **apps, games and plugins written by anyone**, and

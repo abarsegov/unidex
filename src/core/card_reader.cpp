@@ -22,6 +22,7 @@ bool cardReaderTakeReturnToSettings() { return false; }
 // Keep normal firmware's HWCDC/Web Serial. TinyUSB takes the internal PHY only
 // in a separate boot, before HWCDC or any filesystem/application can start.
 static constexpr uint32_t READER_MAGIC = 0x554D5343;
+static constexpr uint32_t READER_VBUS_MAGIC = 0x554D5344;
 static constexpr uint32_t RETURN_MAGIC = 0x554D5254;
 static constexpr uint32_t EXIT_HOLD_MS = 2000, EJECT_GRACE_MS = 1000;
 RTC_NOINIT_ATTR static uint32_t requested;
@@ -32,6 +33,69 @@ static std::atomic<uint32_t> activeOperations{0}, ejectedAt{0};
 static bool failed, preventRemoval, usbStarted;
 static bool buttonDown, buttonRaw, exitArmed, returnToSettings;
 static uint32_t buttonAt, pressedAt;
+
+// Optional HARDWARE VBUS sense. A free ADC1 pin must be connected to USB VBUS
+// through 10k, with another 10k from the pin to GND. Never connect 5V directly.
+// With no wiring, the internal pulldown keeps the detector unarmed.
+#ifndef UNIDEX_USB_VBUS_PIN
+#define UNIDEX_USB_VBUS_PIN -1
+#endif
+static bool vbusArmed;
+#if UNIDEX_USB_VBUS_PIN >= 0
+static_assert(UNIDEX_USB_VBUS_PIN >= 1 && UNIDEX_USB_VBUS_PIN <= 10,
+              "USB VBUS sense requires an unused ESP32-S3 ADC1 GPIO (1..10)");
+static constexpr uint32_t VBUS_HIGH_MV = 1800, VBUS_LOW_MV = 800;
+static constexpr uint32_t VBUS_ARM_MS = 300, VBUS_LOST_MS = 150, VBUS_SAMPLE_MS = 20;
+static uint32_t vbusSampleAt, vbusHighAt, vbusLowAt;
+static bool vbusHigh, vbusLow;
+
+static void vbusBegin(bool inherited) {
+  vbusArmed = inherited;
+  vbusHigh = vbusLow = false;
+  vbusSampleAt = millis() - VBUS_SAMPLE_MS;
+  analogSetPinAttenuation(UNIDEX_USB_VBUS_PIN, ADC_11db);
+  pinMode(UNIDEX_USB_VBUS_PIN, INPUT_PULLDOWN);
+}
+
+static bool vbusPoll() {
+  if (millis() - vbusSampleAt < VBUS_SAMPLE_MS) return false;
+  // Arduino 2.0.17 switches to ANALOG (clearing the pulldown) on every read.
+  // Discharge an unwired input before sampling, then restore the pulldown.
+  pinMode(UNIDEX_USB_VBUS_PIN, INPUT_PULLDOWN);
+  delayMicroseconds(1000);
+  const uint32_t mv = analogReadMilliVolts(UNIDEX_USB_VBUS_PIN);
+  pinMode(UNIDEX_USB_VBUS_PIN, INPUT_PULLDOWN);
+  const uint32_t now = millis();
+  vbusSampleAt = now;
+  if (!vbusArmed) {
+    if (mv >= VBUS_HIGH_MV) {
+      if (!vbusHigh) { vbusHigh = true; vbusHighAt = now; }
+      if (now - vbusHighAt >= VBUS_ARM_MS) vbusArmed = true;
+    } else vbusHigh = false;
+    return false;
+  }
+  if (mv <= VBUS_LOW_MV) {
+    if (!vbusLow) { vbusLow = true; vbusLowAt = now; }
+    return now - vbusLowAt >= VBUS_LOST_MS;
+  }
+  vbusLow = false;  // a rebound or intermediate voltage cancels the low timer
+  return false;
+}
+
+static bool vbusArmBeforeRestart() {
+  vbusBegin(false);
+  const uint32_t start = millis();
+  while (!vbusArmed && millis() - start < VBUS_ARM_MS + 2 * VBUS_SAMPLE_MS) {
+    vbusPoll();
+    delay(5);
+  }
+  return vbusArmed;
+}
+#else
+static void vbusBegin(bool) {}
+static bool vbusPoll() { return false; }
+static bool vbusArmBeforeRestart() { return false; }
+#endif
 
 // Increment BEFORE checking the admission gate. After the loop closes it, any
 // later callback can only reject the operation; earlier raw operations drain.
@@ -51,7 +115,9 @@ bool cardReaderTakeReturnToSettings() {
 
 void cardReaderRequest() {
   storageEnd();
-  requested = READER_MAGIC;
+  // Carry a verified high across this deliberate reboot so unplugging during
+  // the restart/display refresh is still detected in the reader boot.
+  requested = vbusArmBeforeRestart() ? READER_VBUS_MAGIC : READER_MAGIC;
   systemRestart("USB card reader");
 }
 
@@ -73,9 +139,18 @@ static void drawReader() {
   } else {
     drawCentered(ioError.load() ? "Card I/O error" : "microSD on computer", 55);
     drawCentered("Eject drive on PC", 85);
-    drawCentered("Unplug USB, then", 110);
-    drawCentered("hold PWR 2s + release", 135);
-    drawCentered("to return to Settings", 155);
+    if (vbusArmed) {
+      drawCentered("Unplug: auto return", 115);
+      drawCentered("to Settings", 140);
+    } else {
+      drawCentered("Unplug USB, then", 110);
+      drawCentered("hold PWR 2s + release", 135);
+      drawCentered("to return to Settings", 155);
+    }
+#if UNIDEX_USB_VBUS_PIN >= 0
+    display.setFont(FONT_TINY);
+    drawCentered(vbusArmed ? "USB voltage monitored" : "USB sense: waiting", 181);
+#endif
   }
 }
 
@@ -190,7 +265,8 @@ static uint16_t descriptor(uint8_t *dst, uint8_t *itf) {
 }
 
 bool cardReaderBegin() {
-  const bool enter = esp_reset_reason() == ESP_RST_SW && requested == READER_MAGIC;
+  const bool vbusWasArmed = esp_reset_reason() == ESP_RST_SW && requested == READER_VBUS_MAGIC;
+  const bool enter = esp_reset_reason() == ESP_RST_SW && (requested == READER_MAGIC || vbusWasArmed);
   returnToSettings = esp_reset_reason() == ESP_RST_SW && requested == RETURN_MAGIC;
   requested = 0;  // crash/reset/power loss returns to the app, never a boot loop
   if (!enter) {
@@ -201,6 +277,7 @@ bool cardReaderBegin() {
     return false;
   }
   setCpuFrequencyMhz(240);
+  vbusBegin(vbusWasArmed);
   // Do not call inputInit: its emergency two-button restart would cut off a
   // mounted writable drive. The dedicated PWR exit below drains raw I/O first.
   pinMode(0, INPUT_PULLUP);
@@ -248,16 +325,20 @@ static void returnToApp() {
 }
 
 void cardReaderPoll() {
-  static bool shownEjected, shownError;
-  if (shownEjected != ejected.load() || shownError != ioError.load()) {
+  // This is actual VBUS voltage loss, not USB suspend or an idle bus. An
+  // unwired detector never arms, so the existing manual exit remains usable.
+  if (vbusPoll() && !ejected.load()) returnToApp();
+  static bool shownEjected, shownError, shownVbusArmed;
+  if (shownEjected != ejected.load() || shownError != ioError.load() || shownVbusArmed != vbusArmed) {
     shownEjected = ejected.load();
     shownError = ioError.load();
+    shownVbusArmed = vbusArmed;
     displayShow(drawReader, false);
   }
   const uint32_t now = millis();
   // Give TinyUSB time to send the successful eject CSW before disconnecting.
   // Suspend/disconnect notifications are NOT proof that the host ejected:
-  // this board has no VBUS sense, so they never cause an automatic remount.
+  // only the optional physical VBUS detector above handles cable power loss.
   if (ejected.load() && millis() - ejectedAt.load() >= EJECT_GRACE_MS) returnToApp();
   const bool down = digitalRead(18) == LOW;
   if (down != buttonRaw) {
