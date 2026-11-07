@@ -13,8 +13,11 @@ bool usbModeTakeReturnToSettings() { return false; }
 #include <atomic>
 #include <driver/sdmmc_host.h>
 #include <sdmmc_cmd.h>
+#include <device/dcd.h>
 #include <esp32-hal-tinyusb.h>
 #include <soc/rtc_cntl_reg.h>
+#include <soc/usb_reg.h>
+#include <soc/usb_struct.h>
 #include "display.h"
 #include "launcher.h"
 #include "storage.h"
@@ -37,6 +40,59 @@ static bool failed, preventRemoval, usbStarted;
 static bool buttonDown, buttonRaw, exitArmed, returnToSettings;
 static uint32_t buttonAt, pressedAt;
 static const char *wakeStatus = "HID mouse over USB";
+static constexpr uint8_t WAKE_USB_PORT = 0;
+static constexpr int32_t SESSION_SETTLE_MS = 20;
+static std::atomic<uint32_t> wakeSessionEndAt{0};
+
+static bool wakeHasSession() {
+  return (USB0.dcfg & USB_DEVADDR_M) && (USB0.gotgctl & USB_BSESVLD_M);
+}
+
+extern "C" void __real_dcd_event_handler(const dcd_event_t *event, bool inIsr);
+
+extern "C" void __wrap_dcd_event_handler(const dcd_event_t *event, bool inIsr) {
+  if (mode == UsbMode::Wake) {
+    // The bundled ESP32-S3 DCD can report session end on entry to PC sleep,
+    // even when the controller retains an addressed session in suspend.
+    if (inIsr && event->event_id == DCD_EVENT_UNPLUGGED && (USB0.dcfg & USB_DEVADDR_M) && tud_mounted()) {
+      wakeSessionEndAt.store(millis() | 1u);
+      return;
+    }
+    if (event->event_id == DCD_EVENT_BUS_RESET || event->event_id == DCD_EVENT_RESUME ||
+        event->event_id == DCD_EVENT_SETUP_RECEIVED) {
+      wakeSessionEndAt.store(0);
+    }
+  }
+  __real_dcd_event_handler(event, inIsr);
+}
+
+static void pollWakeSession() {
+  uint32_t endedAt = wakeSessionEndAt.load();
+  if (!endedAt || static_cast<int32_t>(millis() - endedAt) < SESSION_SETTLE_MS) return;
+  if (!wakeSessionEndAt.compare_exchange_strong(endedAt, 0)) return;
+
+  if (!wakeHasSession()) {
+    dcd_event_bus_signal(WAKE_USB_PORT, DCD_EVENT_UNPLUGGED, false);
+  } else if ((USB0.dsts & USB_SUSPSTS_M) && !tud_suspended()) {
+    dcd_event_bus_signal(WAKE_USB_PORT, DCD_EVENT_SUSPEND, false);
+  }
+}
+
+extern "C" void __real_dcd_remote_wakeup(uint8_t port);
+
+extern "C" void __wrap_dcd_remote_wakeup(uint8_t port) {
+  if (mode != UsbMode::Wake) {
+    __real_dcd_remote_wakeup(port);
+    return;
+  }
+  // TinyUSB has already checked the host's Remote Wakeup permission. A single
+  // RTOS tick in the bundled DCD can produce a pulse shorter than the USB minimum.
+  USB0.dctl |= USB_RMTWKUPSIG_M;
+  USB0.gintsts = USB_SOF_M;
+  USB0.gintmsk |= USB_SOFMSK_M;
+  delayMicroseconds(3000);
+  USB0.dctl &= ~USB_RMTWKUPSIG_M;
+}
 
 // Optional HARDWARE VBUS sense. A free ADC1 pin must be connected to USB VBUS
 // through 10k, with another 10k from the pin to GND. Never connect 5V directly.
@@ -313,6 +369,7 @@ static void beginWakeMouse() {
   USB.usbAttributes(TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP);
   usbStarted = USB.begin();
   failed = !usbStarted;
+  if (usbStarted) USB0.gintmsk |= USB_WKUPINTMSK_M;
 }
 
 static void drawWake() {
@@ -330,10 +387,14 @@ static void drawWake() {
 }
 
 static void wakePc() {
-  if (!tud_mounted()) wakeStatus = "USB is not connected";
-  else if (!tud_suspended()) wakeStatus = "USB is active";
-  else if (tud_remote_wakeup()) wakeStatus = "Wake signal sent";
-  else wakeStatus = "PC did not arm wake";
+  if (!tud_mounted() || !wakeHasSession()) {
+    wakeStatus = "USB is not connected";
+  } else if (!(USB0.dsts & USB_SUSPSTS_M)) {
+    wakeStatus = "USB is active";
+  } else {
+    if (!tud_suspended()) dcd_event_bus_signal(WAKE_USB_PORT, DCD_EVENT_SUSPEND, false);
+    wakeStatus = tud_remote_wakeup() ? "Wake signal sent" : "PC did not arm wake";
+  }
   displayShow(drawWake, false);
 }
 
@@ -399,6 +460,7 @@ static void pollReader() {
 
 void usbModePoll() {
   if (mode == UsbMode::Reader) pollReader();
+  else if (usbStarted) pollWakeSession();
   const uint32_t now = millis();
   const bool down = digitalRead(18) == LOW;
   if (down != buttonRaw) {
