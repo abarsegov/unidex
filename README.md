@@ -360,6 +360,13 @@ with USB power present. The reader shows **USB voltage monitored** once the divi
 to Settings when VBUS drops. A sleeping host that keeps supplying VBUS leaves the reader open.
 [Espressif VBUS sensing guide](https://docs.espressif.com/projects/esp-iot-solution/en/latest/usb/usb_overview/usb_device_self_power.html)
 
+#### Wake a sleeping PC over USB
+
+Connect the board with a USB data cable and choose **Settings → USB wake PC**. The board appears as a HID mouse
+and stays awake in this mode. If needed, enable **Allow this device to wake the computer** for the mouse in
+Windows Device Manager. Put the PC to sleep, then tap **PWR** on the board to send the USB resume signal.
+Hold **PWR** for two seconds and release it to return to Settings.
+
 ## Apps and plugins: make your own
 
 unidex is built to be taken apart. Beyond the apps above, it runs **apps, games and plugins written by anyone**, and

@@ -1,14 +1,15 @@
-#include "card_reader.h"
+#include "usb_mode.h"
 
 #if UNIDEX_EMU
-bool cardReaderAvailable() { return false; }
-void cardReaderRequest() {}
-bool cardReaderBegin() { return false; }
-void cardReaderPoll() {}
-bool cardReaderTakeReturnToSettings() { return false; }
+bool usbModeAvailable() { return false; }
+void usbModeRequest(UsbMode) {}
+bool usbModeBegin() { return false; }
+void usbModePoll() {}
+bool usbModeTakeReturnToSettings() { return false; }
 #else
 #include <Arduino.h>
 #include <USB.h>
+#include <USBHIDMouse.h>
 #include <atomic>
 #include <driver/sdmmc_host.h>
 #include <sdmmc_cmd.h>
@@ -24,8 +25,10 @@ bool cardReaderTakeReturnToSettings() { return false; }
 static constexpr uint32_t READER_MAGIC = 0x554D5343;
 static constexpr uint32_t READER_VBUS_MAGIC = 0x554D5344;
 static constexpr uint32_t RETURN_MAGIC = 0x554D5254;
+static constexpr uint32_t WAKE_MAGIC = 0x55484944;
 static constexpr uint32_t EXIT_HOLD_MS = 2000, EJECT_GRACE_MS = 1000;
 RTC_NOINIT_ATTR static uint32_t requested;
+static UsbMode mode;
 static sdmmc_card_t card;
 static DMA_ATTR uint8_t sector[512];
 static std::atomic<bool> present{false}, ejected{false}, ioError{false};
@@ -33,6 +36,7 @@ static std::atomic<uint32_t> activeOperations{0}, ejectedAt{0};
 static bool failed, preventRemoval, usbStarted;
 static bool buttonDown, buttonRaw, exitArmed, returnToSettings;
 static uint32_t buttonAt, pressedAt;
+static const char *wakeStatus = "HID mouse over USB";
 
 // Optional HARDWARE VBUS sense. A free ADC1 pin must be connected to USB VBUS
 // through 10k, with another 10k from the pin to GND. Never connect 5V directly.
@@ -105,16 +109,24 @@ struct CardOperation {
   ~CardOperation() { activeOperations.fetch_sub(1); }
 };
 
-bool cardReaderAvailable() { return true; }
+bool usbModeAvailable() { return true; }
 
-bool cardReaderTakeReturnToSettings() {
+bool usbModeTakeReturnToSettings() {
   const bool returning = returnToSettings;
   returnToSettings = false;
   return returning;
 }
 
-void cardReaderRequest() {
+void usbModeRequest(UsbMode next) {
   storageEnd();
+  if (next == UsbMode::Wake) {
+    requested = WAKE_MAGIC;
+    // Detach the serial device before presenting a new USB identity on the same port.
+    Serial.end();
+    delay(250);
+    systemRestart("USB wake PC");
+    return;
+  }
   // Carry a verified high across this deliberate reboot so unplugging during
   // the restart/display refresh is still detected in the reader boot.
   requested = vbusArmBeforeRestart() ? READER_VBUS_MAGIC : READER_MAGIC;
@@ -254,7 +266,7 @@ int32_t tud_msc_scsi_cb(uint8_t lun, const uint8_t cmd[16], void *, uint16_t) {
 }
 }
 
-static uint16_t descriptor(uint8_t *dst, uint8_t *itf) {
+static uint16_t readerDescriptor(uint8_t *dst, uint8_t *itf) {
   const uint8_t str = tinyusb_add_string_descriptor("microSD card reader");
   const uint8_t ep = tinyusb_get_free_duplex_endpoint();
   if (!ep) return 0;
@@ -264,28 +276,7 @@ static uint16_t descriptor(uint8_t *dst, uint8_t *itf) {
   return sizeof(desc);
 }
 
-bool cardReaderBegin() {
-  const bool vbusWasArmed = esp_reset_reason() == ESP_RST_SW && requested == READER_VBUS_MAGIC;
-  const bool enter = esp_reset_reason() == ESP_RST_SW && (requested == READER_MAGIC || vbusWasArmed);
-  returnToSettings = esp_reset_reason() == ESP_RST_SW && requested == RETURN_MAGIC;
-  requested = 0;  // crash/reset/power loss returns to the app, never a boot loop
-  if (!enter) {
-    // The RTC PHY selector can survive a software reset. Restore the same
-    // hardware routing used by Arduino's usb_switch_to_cdc_jtag before Serial.
-    CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG,
-                       RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL | RTC_CNTL_USB_PAD_ENABLE);
-    return false;
-  }
-  setCpuFrequencyMhz(240);
-  vbusBegin(vbusWasArmed);
-  // Do not call inputInit: its emergency two-button restart would cut off a
-  // mounted writable drive. The dedicated PWR exit below drains raw I/O first.
-  pinMode(0, INPUT_PULLUP);
-  pinMode(18, INPUT_PULLUP);
-  buttonRaw = buttonDown = digitalRead(18) == LOW;
-  buttonAt = millis();
-  pressedAt = buttonAt;
-  displayInit(true);
+static void beginReader() {
   sdmmc_host_t host = SDMMC_HOST_DEFAULT();
   host.flags = SDMMC_HOST_FLAG_1BIT;
   sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
@@ -299,7 +290,7 @@ bool cardReaderBegin() {
   if (!failed) failed = sdmmc_card_init(&host, &card) != ESP_OK;
   if (!failed) failed = card.csd.sector_size != 512 || !card.csd.capacity;
   if (!failed) {
-    failed = tinyusb_enable_interface(USB_INTERFACE_MSC, TUD_MSC_DESC_LEN, descriptor) != ESP_OK;
+    failed = tinyusb_enable_interface(USB_INTERFACE_MSC, TUD_MSC_DESC_LEN, readerDescriptor) != ESP_OK;
     if (!failed) {
       USB.productName("Unidex microSD reader");
       present.store(true);
@@ -308,7 +299,72 @@ bool cardReaderBegin() {
       if (failed) present.store(false);
     }
   }
-  displayShow(drawReader, true);
+}
+
+static void beginWakeMouse() {
+  // Its constructor registers HID with TinyUSB. Only construct it in this mode.
+  static USBHIDMouse mouse;
+  mouse.begin();
+  USB.PID(0x4004);  // Espressif's TinyUSB HID PID, separate from native Serial/JTAG
+  USB.productName("Unidex Wake Mouse");
+  USB.usbClass(TUSB_CLASS_UNSPECIFIED);
+  USB.usbSubClass(0);
+  USB.usbProtocol(0);
+  USB.usbAttributes(TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP);
+  usbStarted = USB.begin();
+  failed = !usbStarted;
+}
+
+static void drawWake() {
+  display.fillScreen(WHITE);
+  display.setTextColor(BLACK);
+  drawHeader("USB wake PC");
+  display.setFont(FONT_SMALL);
+  drawCentered(failed ? "USB mouse unavailable" : wakeStatus, 60);
+  if (failed) {
+    drawCentered("PWR: return", 120);
+  } else {
+    drawCentered("Tap PWR to wake PC", 100);
+    drawCentered(exitArmed ? "Release PWR to return" : "Hold PWR 2s to return", 135);
+  }
+}
+
+static void wakePc() {
+  if (!tud_mounted()) wakeStatus = "USB is not connected";
+  else if (!tud_suspended()) wakeStatus = "USB is active";
+  else if (tud_remote_wakeup()) wakeStatus = "Wake signal sent";
+  else wakeStatus = "PC did not arm wake";
+  displayShow(drawWake, false);
+}
+
+bool usbModeBegin() {
+  const uint32_t request = esp_reset_reason() == ESP_RST_SW ? requested : 0;
+  returnToSettings = request == RETURN_MAGIC;
+  requested = 0;  // crash/reset/power loss returns to the app, never a boot loop
+  const bool reader = request == READER_MAGIC || request == READER_VBUS_MAGIC;
+  if (!reader && request != WAKE_MAGIC) {
+    // The RTC PHY selector can survive a software reset. Restore the same
+    // hardware routing used by Arduino's usb_switch_to_cdc_jtag before Serial.
+    CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG,
+                       RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL | RTC_CNTL_USB_PAD_ENABLE);
+    return false;
+  }
+  mode = reader ? UsbMode::Reader : UsbMode::Wake;
+  if (reader) {
+    setCpuFrequencyMhz(240);
+    vbusBegin(request == READER_VBUS_MAGIC);
+  }
+  // Do not call inputInit: its emergency two-button restart would cut off a
+  // mounted writable drive. The dedicated PWR exit below drains raw I/O first.
+  pinMode(0, INPUT_PULLUP);
+  pinMode(18, INPUT_PULLUP);
+  buttonRaw = buttonDown = digitalRead(18) == LOW;
+  buttonAt = millis();
+  pressedAt = buttonAt;
+  displayInit(true);
+  if (reader) beginReader();
+  else beginWakeMouse();
+  displayShow(reader ? drawReader : drawWake, true);
   return true;
 }
 
@@ -324,7 +380,7 @@ static void returnToApp() {
   ESP.restart();
 }
 
-void cardReaderPoll() {
+static void pollReader() {
   // This is actual VBUS voltage loss, not USB suspend or an idle bus. An
   // unwired detector never arms, so the existing manual exit remains usable.
   if (vbusPoll() && !ejected.load()) returnToApp();
@@ -335,11 +391,15 @@ void cardReaderPoll() {
     shownVbusArmed = vbusArmed;
     displayShow(drawReader, false);
   }
-  const uint32_t now = millis();
   // Give TinyUSB time to send the successful eject CSW before disconnecting.
   // Suspend/disconnect notifications are NOT proof that the host ejected:
   // only the optional physical VBUS detector above handles cable power loss.
   if (ejected.load() && millis() - ejectedAt.load() >= EJECT_GRACE_MS) returnToApp();
+}
+
+void usbModePoll() {
+  if (mode == UsbMode::Reader) pollReader();
+  const uint32_t now = millis();
   const bool down = digitalRead(18) == LOW;
   if (down != buttonRaw) {
     buttonRaw = down;
@@ -349,13 +409,14 @@ void cardReaderPoll() {
     buttonDown = buttonRaw;
     if (buttonDown) pressedAt = now;
     else if (failed || exitArmed) returnToApp();
+    else if (mode == UsbMode::Wake) wakePc();
   }
   // A deliberate fallback for hosts which omit START STOP UNIT on eject, or
   // an already unplugged cable. Host-cached writes cannot be recovered here;
   // the display explicitly requires host eject/unplug before this gesture.
   if (!failed && buttonDown && !exitArmed && now - pressedAt >= EXIT_HOLD_MS) {
     exitArmed = true;
-    displayShow(drawReader, false);
+    displayShow(mode == UsbMode::Reader ? drawReader : drawWake, false);
   }
   delay(10);  // no launcher, sync, background apps, or automatic sleep
 }

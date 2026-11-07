@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include "apps/apps.h"
-#include "core/card_reader.h"
 #include "core/clock.h"
 #include "core/devtools.h"
 #include "core/display.h"
@@ -8,6 +7,7 @@
 #include "core/launcher.h"
 #include "core/power.h"
 #include "core/storage.h"
+#include "core/usb_mode.h"
 #include "core/usbsync.h"
 
 #ifdef SET_LOOP_TASK_STACK_SIZE
@@ -15,12 +15,12 @@
 SET_LOOP_TASK_STACK_SIZE(24 * 1024);
 #endif
 
-static bool readerMode;
+static bool usbMode;
 
 void setup() {
   powerInit();
-  readerMode = cardReaderBegin();
-  if (readerMode) return;
+  usbMode = usbModeBegin();
+  if (usbMode) return;
   bool woke = powerWokeFromSleep();
 
   Serial.setRxBufferSize(4096);  // a whole calendar sync fits, even if a screen refresh blocks the loop
@@ -35,14 +35,14 @@ void setup() {
   inputInit();
   displayInit(!woke);
   launcherBegin(woke);
-  if (cardReaderTakeReturnToSettings()) launcherOpen(&settingsApp);
+  if (usbModeTakeReturnToSettings()) launcherOpen(&settingsApp);
   powerOffIfFlat();
   powerWatchdogBegin();
 }
 
 void loop() {
-  if (readerMode) {
-    cardReaderPoll();
+  if (usbMode) {
+    usbModePoll();
     return;
   }
   Event e = inputPoll();
