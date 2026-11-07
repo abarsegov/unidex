@@ -341,10 +341,10 @@ shows as its last 4 characters.
 
 #### Open the panel on your local network
 
-Choose **Settings → LAN panel** to join a saved WiFi network. Keep your phone on the same network and open the
-IP address shown on the display, or scan its QR code. Sign in as `unidex` with the code next to the address.
-Each session gets a new code. Press **Done** or hold **BOOT** to close the panel. The same idle and session
-timeouts apply as for phone setup.
+Unidex starts the panel automatically on WiFi. **Settings → LAN panel** shows the address, QR code, and login.
+From a phone or computer on the same network, open the address and sign in as `unidex` with the code on the
+display. The code lasts until the board restarts. The temporary setup hotspot still opens by holding **PWR**
+in Settings.
 
 #### Use the microSD card as a USB drive
 
@@ -360,12 +360,16 @@ with USB power present. The reader shows **USB voltage monitored** once the divi
 to Settings when VBUS drops. A sleeping host that keeps supplying VBUS leaves the reader open.
 [Espressif VBUS sensing guide](https://docs.espressif.com/projects/esp-iot-solution/en/latest/usb/usb_overview/usb_device_self_power.html)
 
-#### Wake a sleeping PC over USB
+#### Control PC sleep over USB
 
-Connect the board with a USB data cable and choose **Settings → USB wake PC**. The board appears as a HID mouse
-and stays awake in this mode. If needed, enable **Allow this device to wake the computer** for the mouse in
-Windows Device Manager. Put the PC to sleep, then tap **PWR** on the board to send the USB resume signal.
-Hold **PWR** for two seconds and release it to return to Settings.
+In normal operation the USB data cable gives you both a HID mouse and a serial port. In Windows Device
+Manager, allow the Unidex HID mouse to wake the computer. Tap **BOOT** and **PWR** together and release to
+wake a sleeping PC. The LAN panel can also send **Wake PC** and **Sleep PC**. Windows applies its configured
+sleep-button action when it receives Sleep PC.
+
+Use the regular USB serial port for the Unidex tools. For firmware uploads, enter the ROM bootloader with
+**BOOT** held during reset and select its COM port. Opening the application serial port at 1200 baud can also
+request bootloader entry.
 
 ## Apps and plugins: make your own
 

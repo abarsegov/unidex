@@ -1,4 +1,5 @@
 #include "usbsync.h"
+#include "usb_serial.h"
 #include <Arduino.h>
 #include <esp_rom_crc.h>
 #include "clock.h"
@@ -66,56 +67,56 @@ static void badgeData(const char *hex) {
   }
   if (!ok || badgeOut.write(buf, n) != n) {
     abortBadge();
-    Serial.println("ERR");
+    usbSerial().println("ERR");
     return;
   }
   badgeCrc = esp_rom_crc32_le(badgeCrc, buf, n);
   badgeLeft -= n;
-  Serial.println("K");
+  usbSerial().println("K");
   if (badgeLeft > 0) return;
   badgeOut.close();
   if (badgeCrc != badgeExpected) {
     storageRemove(BADGE_TMP);
-    Serial.println("ERR");
+    usbSerial().println("ERR");
     return;
   }
   if (!storageReplace(BADGE_TMP, (String("/badges/") + badgeName).c_str(), badgeBytes)) {
-    Serial.println("ERR");
+    usbSerial().println("ERR");
     return;
   }
   strlcpy(newBadge, badgeName, sizeof newBadge);
-  Serial.printf("OK F %s\n", badgeName);
+  usbSerial().printf("OK F %s\n", badgeName);
 }
 
 static void listBadges() {
   fs::File dir = storageOpen("/badges");
   for (fs::File f = dir ? dir.openNextFile() : fs::File(); f; f = dir.openNextFile()) {
     String n = f.name();
-    if (n.endsWith(".bmp") && !n.startsWith(".")) Serial.printf("F %s\n", n.c_str());
+    if (n.endsWith(".bmp") && !n.startsWith(".")) usbSerial().printf("F %s\n", n.c_str());
   }
-  Serial.println("OK L");
+  usbSerial().println("OK L");
 }
 
 static void finishEvents() {
   if (out) out.close();
   if (crc != expectedCrc) {
     storageRemove(EVENTS_TMP);
-    Serial.println("ERR");
+    usbSerial().println("ERR");
     return;
   }
   if (!unchanged) {
     if (!storageReplace(EVENTS_TMP, EVENTS, written)) {  // no card, or it's full: the saved calendar stays
-      Serial.println("ERR");
+      usbSerial().println("ERR");
       return;
     }
     storagePutInt("events_crc", (int32_t)crc);
     generation++;
   }
 #if DEBUG
-  Serial.println(unchanged ? "events unchanged" : "events saved");
+  usbSerial().println(unchanged ? "events unchanged" : "events saved");
 #endif
   lastSync = time(nullptr);
-  Serial.printf("OK E %lu\n", (unsigned long)crc);
+  usbSerial().printf("OK E %lu\n", (unsigned long)crc);
 }
 
 bool usbSyncSaveEvents(const std::vector<std::string> &lines) {
@@ -155,13 +156,13 @@ static void handle(const char *l) {
   if (devUsb(l)) return;  // test build: screenshots and virtual buttons
 #endif
   if (strcmp(l, "?") == 0) {
-    Serial.println("unidex 1");
+    usbSerial().println("unidex 1");
   } else if (strcmp(l, "V") == 0) {
-    Serial.printf("OK V %s\n", UNIDEX_VERSION);
+    usbSerial().printf("OK V %s\n", UNIDEX_VERSION);
   } else if (strcmp(l, "C") == 0) {
     char status[96];
     clockStatus(status, sizeof status);
-    Serial.printf("OK C %s\n", status);
+    usbSerial().printf("OK C %s\n", status);
   } else if (notesUsb(l)) {
     // Setup (WiFi, keys) and note download: "N ..." (src/apps/notes/usb.h)
   } else if (petUsb(l)) {
@@ -181,19 +182,19 @@ static void handle(const char *l) {
               bytes > 0 && bytes <= (long)BADGE_MAX_BYTES;
     if (ok) badgeOut = storageOpen(BADGE_TMP, "w");
     if (!ok || !badgeOut) {
-      Serial.println("ERR");
+      usbSerial().println("ERR");
       return;
     }
     strlcpy(badgeName, name, sizeof badgeName);
     badgeLeft = badgeBytes = bytes;
     badgeCrc = 0;
     badgeExpected = crc32;
-    Serial.println("OK B");
+    usbSerial().println("OK B");
   } else if (l[0] == 'T' && l[1] == ' ') {
     char *end;
     const long long t = strtoll(l + 2, &end, 10);
     // A number and a time from 2024 to 2099 only: "T abc" or "T 0" used to set 1970 and a nonsense year on the chip.
-    Serial.println(end != l + 2 && !*end && clockSet((time_t)t) ? "OK T" : "ERR");
+    usbSerial().println(end != l + 2 && !*end && clockSet((time_t)t) ? "OK T" : "ERR");
   } else if (l[0] == 'E' && l[1] == ' ') {
     // "E <count> <crc>", both numbers: "E abc" or "E -1 0" used to read as an empty calendar and replace the saved
     // one. ("E 0 0" is a real empty week: the crc of nothing is 0.)
@@ -201,7 +202,7 @@ static void handle(const char *l) {
     const long count = strtol(l + 2, &end, 10);
     const unsigned long sum = strtoul(end, &crcEnd, 10);
     if (end == l + 2 || crcEnd == end || *crcEnd || count < 0 || count > 1000 || strchr(end, '-')) {
-      Serial.println("ERR");
+      usbSerial().println("ERR");
       return;
     }
     remaining = count;
@@ -225,8 +226,8 @@ void usbSyncPoll() {
   }
   if (badgeLeft > 0 && millis() - lastLineAt > STALL_MS) abortBadge();
   appsUsbPoll();
-  while (Serial.available()) {
-    char c = Serial.read();
+  while (usbSerial().available()) {
+    char c = usbSerial().read();
     if (c == '\r') continue;
     if (c != '\n') {
       if (len < sizeof line - 1) line[len++] = c;
@@ -240,7 +241,7 @@ void usbSyncPoll() {
     // Send the reply now: after a burst of output a short line can sit in the USB buffer. Asking whether the
     // host is there nudges the data out by itself; flush() only waits once the host has read from us before
     // (on a fresh connection it would throw the reply away instead).
-    if (Serial) Serial.flush();
+    if (Serial) usbSerial().flush();
   }
 }
 

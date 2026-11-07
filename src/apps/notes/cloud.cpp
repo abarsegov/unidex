@@ -1,4 +1,5 @@
 #include "cloud.h"
+#include "../../core/usb_serial.h"
 #include <ArduinoJson.h>
 #include <mbedtls/base64.h>
 #include "../../core/credentials.h"
@@ -51,7 +52,7 @@ static const char *failure(int status, const char *service, const String &body) 
   else if (status == 429) snprintf(reason, sizeof reason, "%s: busy, try later", service);
   else snprintf(reason, sizeof reason, "%s: error %d", service, status);
 #if DEBUG
-  Serial.printf("%s %d: %.300s\n", service, status, body.c_str());
+  usbSerial().printf("%s %d: %.300s\n", service, status, body.c_str());
 #endif
   return reason;
 }
@@ -76,7 +77,7 @@ static const char *elevenFailure(int status, const char *service, const String &
     snprintf(reason, sizeof reason, "%s: error %d %s", service, status, why.c_str());
   }
 #if DEBUG
-  Serial.printf("%s %d: %.300s\n", service, status, body.c_str());
+  usbSerial().printf("%s %d: %.300s\n", service, status, body.c_str());
 #endif
   return reason;
 }
@@ -453,6 +454,6 @@ const char *cloudTest(const char *what, String &detail) {
   } else {
     err = "unknown test";
   }
-  netOff();
+  netRelease();
   return err;
 }

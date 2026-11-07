@@ -8,6 +8,9 @@
 const char *netConnect();  // nullptr when connected, else a short reason for the screen
 const char *netBegin();    // starts connecting and returns at once (netConnect() then waits for it)
 void netOff();
+void netRelease();  // finish a network job and keep a connected station available
+bool netConnecting();
+void netBackgroundPoll();  // cooperatively reconnect saved networks when the radio is free
 void netClaim(bool on);  // background work (a note sending) owns the WiFi: others must not turn it off
 bool netClaimed();
 

@@ -1,4 +1,5 @@
 #include "appsusb.h"
+#include "../../core/usb_serial.h"
 #include <Arduino.h>
 #include <esp_rom_crc.h>
 #include "appstore.h"
@@ -19,7 +20,7 @@ static void abortUpload() {
 }
 
 static void hexLine(const char *text) {
-  for (const char *c = text; *c; c++) Serial.printf("%02x", (uint8_t)*c);
+  for (const char *c = text; *c; c++) usbSerial().printf("%02x", (uint8_t)*c);
 }
 
 static int hexValue(char c) {
@@ -40,12 +41,12 @@ bool appsUsbData(const char *l) {
   }
   if (!ok || upOut.write(buf, n) != n) {
     abortUpload();
-    Serial.println("ERR");
+    usbSerial().println("ERR");
     return true;
   }
   upCrc = esp_rom_crc32_le(upCrc, buf, n);
   upLeft -= n;
-  Serial.println("K");
+  usbSerial().println("K");
   if (upLeft > 0) return true;
   upOut.close();
   const String path = appsStagePath(upId, upPath.c_str());
@@ -54,10 +55,10 @@ bool appsUsbData(const char *l) {
   check.close();
   if (upCrc != upExpected || !whole) {
     storageRemove(path.c_str());
-    Serial.println("ERR");
+    usbSerial().println("ERR");
     return true;
   }
-  Serial.println("OK A FILE");
+  usbSerial().println("OK A FILE");
   return true;
 }
 
@@ -67,13 +68,13 @@ void appsUsbPoll() {
 
 static void list() {
   for (const AppEntry &e : appsList(true)) {
-    Serial.printf("A %s %s %llu %llu ", e.id.c_str(), e.offloaded ? "-" : e.version.length() ? e.version.c_str() : "?",
+    usbSerial().printf("A %s %s %llu %llu ", e.id.c_str(), e.offloaded ? "-" : e.version.length() ? e.version.c_str() : "?",
                   (unsigned long long)e.code, (unsigned long long)e.data);
     if (e.problem.length()) hexLine(e.problem.c_str());
-    else Serial.print("ok");
-    Serial.println();
+    else usbSerial().print("ok");
+    usbSerial().println();
   }
-  Serial.println("OK A end");
+  usbSerial().println("OK A end");
 }
 
 bool appsUsb(const char *l) {
@@ -85,11 +86,11 @@ bool appsUsb(const char *l) {
   } else if (!strcmp(c, "SPACE")) {
     uint64_t used = 0, total = 0;
     storageUsage(used, total);
-    Serial.printf("OK A %u %llu\n", (unsigned)appsList(false).size(), (unsigned long long)(total - used));
+    usbSerial().printf("OK A %u %llu\n", (unsigned)appsList(false).size(), (unsigned long long)(total - used));
   } else if (sscanf(c, "BEGIN %31s", id) == 1) {
     abortUpload();
-    if (!apps::idOk(id) || !appsBegin(id)) Serial.println("ERR");
-    else Serial.println("OK A BEGIN");
+    if (!apps::idOk(id) || !appsBegin(id)) usbSerial().println("ERR");
+    else usbSerial().println("OK A BEGIN");
   } else if (!strncmp(c, "PUT ", 4)) {
     long bytes = 0;
     unsigned long crc = 0;
@@ -99,7 +100,7 @@ bool appsUsb(const char *l) {
               appsStaging(id);  // after A BEGIN
     if (ok) upOut = storageOpen(appsStagePath(id, path).c_str(), "w");
     if (!ok || !upOut) {
-      Serial.println("ERR");
+      usbSerial().println("ERR");
       return true;
     }
     upId = id;
@@ -108,36 +109,36 @@ bool appsUsb(const char *l) {
     upCrc = 0;
     upExpected = crc;
     upLastAt = millis();
-    Serial.println("OK A PUT");
+    usbSerial().println("OK A PUT");
   } else if (sscanf(c, "DONE %31s", id) == 1) {
     abortUpload();
     if (scriptsRunning(id)) {
-      Serial.print("ERR ");
+      usbSerial().print("ERR ");
       hexLine("open on the device");
-      Serial.println();
+      usbSerial().println();
       return true;
     }
     if (const char *why = apps::idOk(id) ? appsCommit(id) : "bad id") {
-      Serial.print("ERR ");
+      usbSerial().print("ERR ");
       hexLine(why);
-      Serial.println();
+      usbSerial().println();
     } else {
       scriptsListChanged();
-      Serial.printf("OK A DONE %s\n", id);
+      usbSerial().printf("OK A DONE %s\n", id);
     }
   } else if (sscanf(c, "DATA %31s", id) == 1) {
-    if (!apps::idOk(id)) Serial.println("ERR");
-    else Serial.printf("OK A DATA %llu\n", (unsigned long long)storageTreeBytes((appsDir(id) + "/data").c_str()));
+    if (!apps::idOk(id)) usbSerial().println("ERR");
+    else usbSerial().printf("OK A DATA %llu\n", (unsigned long long)storageTreeBytes((appsDir(id) + "/data").c_str()));
   } else if (sscanf(c, "RM %31s %7s", id, flag) >= 1) {
-    if (!apps::idOk(id) || (flag[0] && strcmp(flag, "keep"))) Serial.println("ERR");
-    else if (scriptsRunning(id)) Serial.println("ERR busy");
-    else if (!appsRemove(id, flag[0] != 0)) Serial.println("ERR");
+    if (!apps::idOk(id) || (flag[0] && strcmp(flag, "keep"))) usbSerial().println("ERR");
+    else if (scriptsRunning(id)) usbSerial().println("ERR busy");
+    else if (!appsRemove(id, flag[0] != 0)) usbSerial().println("ERR");
     else {
       scriptsListChanged();
-      Serial.printf("OK A RM %s\n", id);
+      usbSerial().printf("OK A RM %s\n", id);
     }
   } else {
-    Serial.println("ERR");
+    usbSerial().println("ERR");
   }
   return true;
 }

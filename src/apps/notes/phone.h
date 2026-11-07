@@ -9,9 +9,8 @@
 // (for the Apps tab, which installs from the store over it) and puts the hotspot on its channel. It stops itself
 // after a few minutes with nobody using it, or when the page's Done is pressed.
 enum class PhoneTab : uint8_t { Notes, Settings, Setup };  // the page it opens on
-enum class PhoneAccess : uint8_t { Hotspot, Lan };
 
-const char *phoneStart(PhoneTab tab, PhoneAccess access = PhoneAccess::Hotspot);
+const char *phoneStart(PhoneTab tab);
 void phoneStop();
 bool phoneOn();
 Redraw phoneTick();          // call often while on: answers the phone; stops after the idle time or Done
@@ -25,3 +24,10 @@ bool phoneDone();            // it stopped because Done was pressed on the page 
 const char *phoneSsid();     // "unidex-1A2B" (the same for this device every time)
 const char *phonePassword();
 const char *phoneJoinCode(); // what the QR code holds: WIFI:T:WPA;S:<ssid>;P:<password>;;
+
+// Persistent LAN service, polled from the main loop; manual hotspot takes precedence.
+void phoneLanPoll();
+void phoneLanStop();  // close clients and SD files before switching modes
+bool phoneLanKeepAwake();
+const char *phoneLanUrl();
+void phoneLanDraw();  // address, QR code, and login details

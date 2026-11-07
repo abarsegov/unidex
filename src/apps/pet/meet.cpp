@@ -1,4 +1,5 @@
 #include "meet.h"
+#include "../../core/usb_serial.h"
 #include <esp_random.h>
 #include "friends_logic.h"
 #include "meet_logic.h"
@@ -370,8 +371,8 @@ static void runGame(uint8_t act, uint32_t seed, uint32_t startAt) {
 #if UNIDEX_DEV
     if (act == meet::CATCH && !game.over && game.cur.to() == mine() && t >= game.cur.at && announced != game.k) {
       announced = game.k;
-      Serial.printf("XG throw %d arrives %ld\n", game.k, (long)(game.cur.arrives() - t));
-      if (Serial) Serial.flush();
+      usbSerial().printf("XG throw %d arrives %ld\n", game.k, (long)(game.cur.arrives() - t));
+      if (Serial) usbSerial().flush();
     }
 #endif
     if (t >= 0 && (int32_t)(now - nextFrameAt) >= 0) {
@@ -379,10 +380,10 @@ static void runGame(uint8_t act, uint32_t seed, uint32_t startAt) {
       displayFrame(drawGameFrame);
       nextFrameAt = now + GAME_FRAME_MS;
 #if UNIDEX_DEV
-      Serial.printf("XG t=%ld k=%d rally=%d best=%d drops=%d pulls=%d,%d shift=%d winner=%d over=%d\n", (long)t,
+      usbSerial().printf("XG t=%ld k=%d rally=%d best=%d drops=%d pulls=%d,%d shift=%d winner=%d over=%d\n", (long)t,
                     game.k, game.rally, game.best, game.drops, game.pulls[0], game.pulls[1], game.shift(),
                     game.winner, game.over);
-      if (Serial) Serial.flush();
+      if (Serial) usbSerial().flush();
 #endif
     }
     keepAlive();
@@ -394,7 +395,7 @@ static void runGame(uint8_t act, uint32_t seed, uint32_t startAt) {
   inputCountB(false);
   displayFastFrames(false);
 #if UNIDEX_DEV
-  Serial.printf("XG end rally=%d best=%d winner=%d quit=%d\n", game.rally, game.best, game.winner, game.quit);
+  usbSerial().printf("XG end rally=%d best=%d winner=%d quit=%d\n", game.rally, game.best, game.winner, game.quit);
 #endif
   char text[40];
   const char *who = partner.name[0] ? partner.name : "them";
@@ -444,9 +445,9 @@ static void play(uint8_t act, uint8_t actor, uint32_t seed, uint32_t startAt) {
       current = &script.frames[k];
       displayFrame(drawActFrame);
 #if UNIDEX_DEV
-      Serial.printf("XW %d%s\n", k, highFive && k == script.nowBeat ? " now" : "");  // test build: each frame as it
+      usbSerial().printf("XW %d%s\n", k, highFive && k == script.nowBeat ? " now" : "");  // test build: each frame as it
       // shows, so two boards' timing can be compared (and a test can press in time for a high five)
-      if (Serial) Serial.flush();
+      if (Serial) usbSerial().flush();
 #endif
     }
     current = nullptr;

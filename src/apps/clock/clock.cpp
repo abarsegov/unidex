@@ -440,7 +440,7 @@ static const char *hear(String &heard) {
     err = cloudTranscribe(audio, 2, heard);
   }
   jobGiveBuffer(samples);
-  netOff();
+  netRelease();
   netClaim(false);
   powerRelease();
   return err;

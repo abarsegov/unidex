@@ -4,6 +4,8 @@
 #include "battery.h"
 #include "display.h"
 #include "theme.h"
+#include "usb_mode.h"
+#include "../apps/notes/phone.h"
 #include <Arduino.h>
 #include <driver/gpio.h>
 #include <esp_sleep.h>
@@ -98,6 +100,7 @@ static uint64_t untilWake() {
 void powerSleepIfIdle() {
   // Sleeping with a button held would wake straight away, in a loop.
   if (millis() - lastActivity < idleMs || inputAnyDown() || holds) return;
+  if (usbHostConnected() || phoneLanKeepAwake()) return;
 #if UNIDEX_DEV
   return;  // test build: always awake, so the test tools never find it asleep (USB host detection can drop out)
 #endif
@@ -150,7 +153,8 @@ void powerNap() {
   delay(5);  // test build: no light sleep (see powerSleepIfIdle)
   return;
 #endif
-  if (HWCDC::isPlugged() || inputAnyDown() || holds) {  // light sleep drops WiFi
+  // Give USB time to enumerate before the first nap.
+  if (millis() < 3000 || usbHostConnected() || phoneLanKeepAwake() || inputAnyDown() || holds) {
     delay(5);
     return;
   }

@@ -332,7 +332,7 @@ static void worker(void *) {
       if (more) running = waitingItem, hasWaiting = false;
       portEXIT_CRITICAL(&mux);
       if (more) continue;
-      netOff();
+      netRelease();
       netClaim(false);
       publish(JobStep::Idle);
       powerRelease();

@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "apps/apps.h"
+#include "apps/notes/phone.h"
 #include "core/clock.h"
 #include "core/devtools.h"
 #include "core/display.h"
@@ -8,6 +9,7 @@
 #include "core/power.h"
 #include "core/storage.h"
 #include "core/usb_mode.h"
+#include "core/usb_serial.h"
 #include "core/usbsync.h"
 
 #ifdef SET_LOOP_TASK_STACK_SIZE
@@ -23,12 +25,10 @@ void setup() {
   if (usbMode) return;
   bool woke = powerWokeFromSleep();
 
-  Serial.setRxBufferSize(4096);  // a whole calendar sync fits, even if a screen refresh blocks the loop
-  Serial.begin(115200);
 #if DEBUG
-  // Native USB needs a moment to enumerate. Skipped after a wake: the port dropped during sleep anyway.
+  // Give a connected terminal time to open the new USB port on a cold boot.
   uint32_t t0 = millis();
-  while (!woke && !Serial && millis() - t0 < 3000) delay(10);
+  while (!woke && !usbSerial() && millis() - t0 < 3000) delay(10);
 #endif
 
   clockBegin();  // local time for every app (one I2C read)
@@ -41,15 +41,19 @@ void setup() {
 }
 
 void loop() {
-  if (usbMode) {
-    usbModePoll();
-    return;
-  }
+  usbModePoll();
+  if (usbMode) return;
   Event e = inputPoll();
   if (e != Event::None) {
     powerActivity();
-    launcherHandle(e);
+    if (e == Event::WakePc) {
+      const char *error = usbWakePc();
+      launcherToast(error ? error : "Wake signal sent");
+    } else {
+      launcherHandle(e);
+    }
   }
+  phoneLanPoll();
   usbSyncPoll();
 #if UNIDEX_DEV
   devTick();

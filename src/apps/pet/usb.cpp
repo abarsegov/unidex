@@ -1,4 +1,5 @@
 #include "pet.h"
+#include "../../core/usb_serial.h"
 #include "pet_logic.h"
 #include "../../core/storage.h"
 
@@ -89,9 +90,9 @@ bool petUsb(const char *line) {
   if (strncmp(line, "P ", 2) != 0) return false;
   const char *cmd = line + 2;
   if (strcmp(cmd, "GET") == 0) {
-    Serial.printf("OK P %05lx ", (unsigned long)petLookBits());
-    for (const char c : petName()) Serial.printf("%02x", (uint8_t)c);
-    Serial.print('\n');
+    usbSerial().printf("OK P %05lx ", (unsigned long)petLookBits());
+    for (const char c : petName()) usbSerial().printf("%02x", (uint8_t)c);
+    usbSerial().print('\n');
   } else if (strncmp(cmd, "SET ", 4) == 0) {
     char lookHex[12] = "", nameHex[2 * MAX_NAME + 2] = "";
     String name;
@@ -99,24 +100,24 @@ bool petUsb(const char *line) {
     const int n = sscanf(cmd + 4, "%11s %25s", lookHex, nameHex);
     const unsigned long look = strtoul(lookHex, &end, 16);
     if (n < 1 || *end || !nameFromHex(n > 1 ? nameHex : "", name) || !petSave(look, name)) {
-      Serial.println("ERR");
+      usbSerial().println("ERR");
       return true;
     }
-    Serial.println("OK P SET");
+    usbSerial().println("OK P SET");
   } else if (strcmp(cmd, "OWNER") == 0) {
-    Serial.print("OK P OWNER ");
-    for (const char c : petOwnerName()) Serial.printf("%02x", (uint8_t)c);
-    Serial.print('\n');
+    usbSerial().print("OK P OWNER ");
+    for (const char c : petOwnerName()) usbSerial().printf("%02x", (uint8_t)c);
+    usbSerial().print('\n');
   } else if (strncmp(cmd, "OWNER ", 6) == 0) {
     String name;
     const char *hex = cmd + 6;
     if (!nameFromHex(strcmp(hex, "-") == 0 ? "" : hex, name) || !petSaveOwner(name)) {
-      Serial.println("ERR");
+      usbSerial().println("ERR");
       return true;
     }
-    Serial.println("OK P OWNER");
+    usbSerial().println("OK P OWNER");
   } else {
-    Serial.println("ERR");
+    usbSerial().println("ERR");
   }
   return true;
 }

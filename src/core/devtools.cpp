@@ -1,5 +1,7 @@
 #if UNIDEX_DEV
 #include "devtools.h"
+#include "usb_serial.h"
+#include "usb_mode.h"
 #include <Arduino.h>
 #include <esp_heap_caps.h>
 #include <esp_rom_crc.h>
@@ -47,37 +49,37 @@ void devSetFrameStepper(void (*fn)(int, const char *)) { frameStepper = fn; }
 void devSetDetail(const char *(*fn)()) { detailFn = fn; }
 
 static void printHex(const char *s) {
-  for (; *s; s++) Serial.printf("%02x", (uint8_t)*s);
+  for (; *s; s++) usbSerial().printf("%02x", (uint8_t)*s);
 }
 
 static void shot() {
   const DisplayRefresh r = displayLastRefresh();
-  Serial.printf("XS 200 200 %c %lu ", r.kind ? r.kind : '-', (unsigned long)r.ms);
+  usbSerial().printf("XS 200 200 %c %lu ", r.kind ? r.kind : '-', (unsigned long)r.ms);
   printHex(launcherScreenName());
-  Serial.print('\n');
+  usbSerial().print('\n');
   char hex[201];
   uint8_t px[100];
   uint32_t crc = 0;
   for (int row = 0; row < 50; row++) {  // 100 bytes = 4 pixel rows per line, 1 = black
     for (int i = 0; i < 100; i++) px[i] = ~display.buf[row * 100 + i], sprintf(hex + 2 * i, "%02x", px[i]);
     crc = esp_rom_crc32_le(crc, px, sizeof px);
-    Serial.printf("XD %s\n", hex);
+    usbSerial().printf("XD %s\n", hex);
   }
-  Serial.printf("OK X SHOT %lu\n", (unsigned long)crc);
+  usbSerial().printf("OK X SHOT %lu\n", (unsigned long)crc);
 }
 
 void devShotDuringAnimation() {
   static char line[16];
   static int n;
-  while (Serial.available()) {
-    const char c = Serial.read();
+  while (usbSerial().available()) {
+    const char c = usbSerial().read();
     if (c == '\n') {
       line[n] = 0;
       if (strcmp(line, "X SHOT") == 0 || strcmp(line, "X STATE") == 0) devUsb(line);  // safe: they only report
-      else if (strcmp(line, "X TAP B") == 0) inputVirtualHoldB(80), Serial.println("OK X TAP B");  // B for an instant (a high five)
-      else if (strcmp(line, "X HOLD A") == 0) inputVirtualEvent(Event::ALong), Serial.println("OK X HOLD A");  // (a game)
-      else if (n) Serial.println("ERR busy");  // anything else would act in the middle of the animation
-      if (Serial) Serial.flush();
+      else if (strcmp(line, "X TAP B") == 0) inputVirtualHoldB(80), usbSerial().println("OK X TAP B");  // B for an instant (a high five)
+      else if (strcmp(line, "X HOLD A") == 0) inputVirtualEvent(Event::ALong), usbSerial().println("OK X HOLD A");  // (a game)
+      else if (n) usbSerial().println("ERR busy");  // anything else would act in the middle of the animation
+      if (Serial) usbSerial().flush();
       n = 0;
     } else if (c != '\r' && n < (int)sizeof line - 1) {
       line[n++] = c;
@@ -91,7 +93,7 @@ static void press(Event e) {
   launcherHandle(e);
   powerActivity();
   const DisplayRefresh r = displayLastRefresh();
-  Serial.printf("OK X BTN %c %lu\n", r.count != count ? r.kind : '-', (unsigned long)r.ms);
+  usbSerial().printf("OK X BTN %c %lu\n", r.count != count ? r.kind : '-', (unsigned long)r.ms);
 }
 
 // The battery log: every 5 s the reading, USB and the % shown, for the last hour (X BATTLOG prints it). It keeps
@@ -109,7 +111,7 @@ void devTick() {
   if (millis() < battNext) return;
   battNext = millis() + 5000;
   battLog[battCount++ % 720] = {millis() / 1000, (int16_t)batteryMillivolts(), (int8_t)batteryPercent(),
-                                (uint8_t)HWCDC::isPlugged()};
+                                (uint8_t)usbHostConnected()};
 }
 
 bool devUsb(const char *l) {
@@ -121,84 +123,84 @@ bool devUsb(const char *l) {
     const char k = c[4];
     const Event e = k == 'a' ? Event::AShort : k == 'A' ? Event::ALong : k == 'b' ? Event::BShort
                   : k == 'B' ? Event::BLong : k == 'R' ? Event::Reset : Event::None;
-    if (e == Event::None) Serial.println("ERR");
+    if (e == Event::None) usbSerial().println("ERR");
     else press(e);
   } else if (strncmp(c, "HOLD B ", 7) == 0) {
     inputVirtualHoldB(strtoul(c + 7, nullptr, 10));
     press(Event::BLong);
   } else if (strcmp(c, "STATE") == 0) {
-    Serial.print("OK X STATE screen=");
+    usbSerial().print("OK X STATE screen=");
     printHex(launcherScreenName());
-    Serial.print(" sel=");
+    usbSerial().print(" sel=");
     printHex(launcherSelectedName());
-    Serial.printf(" clock=%d dry=%d fake=%d netfail=%d nocard=%d nopush=%d reset=%d up=%lu refreshes=%lu lastms=%lu detail=",
+    usbSerial().printf(" clock=%d dry=%d fake=%d netfail=%d nocard=%d nopush=%d reset=%d up=%lu refreshes=%lu lastms=%lu detail=",
                   clockValid(), dryRun, fakeCloud, netFail, noCard, noPush, (int)esp_reset_reason(),
                   (unsigned long)(millis() / 1000), (unsigned long)displayLastRefresh().count,
                   (unsigned long)displayLastRefresh().ms);
     printHex(detailFn ? detailFn() : "");
-    Serial.printf(" flat=%d toast=", (int)powerFlatShown());
+    usbSerial().printf(" flat=%d toast=", (int)powerFlatShown());
     printHex(launcherToastText());
-    Serial.print('\n');
+    usbSerial().print('\n');
   } else if (strcmp(c, "BATT") == 0) {
     const int mv = batteryMillivolts(), pct = batteryPercent();
-    Serial.printf("OK X BATT mv=%d pct=%d usb=%d up=%lu kept=%d\n", mv, pct, (int)batteryCharging(),
+    usbSerial().printf("OK X BATT mv=%d pct=%d usb=%d up=%lu kept=%d\n", mv, pct, (int)batteryCharging(),
                   (unsigned long)(millis() / 1000), (int)batteryKept());
   } else if (strcmp(c, "BATTLOG") == 0) {  // X BATTLOG: "BL <s> <mv> <usb> <pct>" lines, oldest first
     for (uint32_t i = battCount > 720 ? battCount - 720 : 0; i < battCount; i++) {
       const BattEntry &e = battLog[i % 720];
-      Serial.printf("BL %lu %d %d %d\n", (unsigned long)e.s, e.mv, e.usb, e.pct);
+      usbSerial().printf("BL %lu %d %d %d\n", (unsigned long)e.s, e.mv, e.usb, e.pct);
     }
-    Serial.println("OK X BATTLOG");
+    usbSerial().println("OK X BATTLOG");
   } else if (strcmp(c, "BATTCALLS") == 0) {  // X BATTCALLS: every % worked out lately, with what it saw
     batteryPrintCalls();
-    Serial.println("OK X BATTCALLS");
+    usbSerial().println("OK X BATTCALLS");
   } else if (strcmp(c, "I2C") == 0) {  // the clock chip's bus: which addresses answer
-    Serial.printf("OK X I2C sda=%d scl=%d", digitalRead(47), digitalRead(48));  // both 1 when the bus is free
+    usbSerial().printf("OK X I2C sda=%d scl=%d", digitalRead(47), digitalRead(48));  // both 1 when the bus is free
     for (uint8_t a = 1; a < 127; a++) {
       Wire.beginTransmission(a);
       const uint8_t err = Wire.endTransmission();
-      if (err == 0) Serial.printf(" %02x", a);
+      if (err == 0) usbSerial().printf(" %02x", a);
       if (err == 5) {  // a timeout: the bus is held, so every other address would wait as long
-        Serial.print(" timeout");
+        usbSerial().print(" timeout");
         break;
       }
     }
-    Serial.print('\n');
+    usbSerial().print('\n');
   } else if (strcmp(c, "BEEP") == 0) {
-    Serial.println(audioChime() ? "OK X BEEP" : "ERR codec");
+    usbSerial().println(audioChime() ? "OK X BEEP" : "ERR codec");
   } else if (strcmp(c, "MEM") == 0) {
-    Serial.printf("OK X MEM internal=%u block=%u psram=%u psblock=%u\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+    usbSerial().printf("OK X MEM internal=%u block=%u psram=%u psblock=%u\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                   heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                   heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
   } else if (strncmp(c, "SLEEP ", 6) == 0) {
-    Serial.println("OK X SLEEP");
-    Serial.flush();
+    usbSerial().println("OK X SLEEP");
+    usbSerial().flush();
     delay(50);
     powerSleepFor(strtoul(c + 6, nullptr, 10));  // doesn't return: the board boots again after the timer
   } else if (strncmp(c, "MANUAL ", 7) == 0) {
     manualFrames = c[7] == '1';
-    Serial.println("OK X MANUAL");
+    usbSerial().println("OK X MANUAL");
   } else if (strncmp(c, "SEED ", 5) == 0) {
     seed = strtoul(c + 5, nullptr, 10);
-    Serial.println("OK X SEED");
+    usbSerial().println("OK X SEED");
   } else if (strncmp(c, "FRAMES ", 7) == 0) {
     if (frameStepper) frameStepper(atoi(c + 7), nullptr);
     powerActivity();
-    Serial.println("OK X FRAMES");
+    usbSerial().println("OK X FRAMES");
   } else if (strncmp(c, "PLAY ", 5) == 0) {
     if (frameStepper) frameStepper(strlen(c + 5), c + 5);
     powerActivity();
-    Serial.println("OK X PLAY");
+    usbSerial().println("OK X PLAY");
   } else if (strncmp(c, "FILL ", 5) == 0) {  // X FILL b|w: the whole screen black or white, with a full refresh
     static bool black;
     black = c[5] == 'b';
     displayShow([] { display.fillScreen(black ? BLACK : WHITE); }, true);
-    Serial.printf("OK X FILL %c %lu\n", c[5], (unsigned long)displayLastRefresh().busyMs);
+    usbSerial().printf("OK X FILL %c %lu\n", c[5], (unsigned long)displayLastRefresh().busyMs);
   } else if (strncmp(c, "GAMEWAVE ", 9) == 0) {  // X GAMEWAVE <frames> [rate]: the games' waveform, next round on
     int frames = 0, rate = 0;
     sscanf(c + 9, "%d %d", &frames, &rate);
     displaySetGameFrames(frames, rate);
-    Serial.printf("OK X GAMEWAVE %d %d\n", frames, rate);
+    usbSerial().printf("OK X GAMEWAVE %d %d\n", frames, rate);
   } else if (strncmp(c, "FTEST ", 6) == 0) {  // X FTEST <SPI MHz> <fast frames, 0 = panel's own> <rate>
     int mhz = 4, frames = 0, rate = 2;
     sscanf(c + 6, "%d %d %d", &mhz, &frames, &rate);
@@ -217,37 +219,37 @@ bool devUsb(const char *l) {
       total += millis() - t0, busy += displayLastRefresh().busyMs;
     }
     displayFastFrames(false);
-    Serial.printf("OK X FTEST ms=%lu busy=%lu\n", (unsigned long)(total / 20), (unsigned long)(busy / 20));
+    usbSerial().printf("OK X FTEST ms=%lu busy=%lu\n", (unsigned long)(total / 20), (unsigned long)(busy / 20));
   } else if (strcmp(c, "CLOCK UNSET") == 0) {
     const timeval tv = {0, 0};
     settimeofday(&tv, nullptr);
-    Serial.println("OK X CLOCK");
+    usbSerial().println("OK X CLOCK");
   } else if (!strncmp(c, "DRY ", 4) || !strncmp(c, "FAKE ", 5) || !strncmp(c, "NETFAIL ", 8) ||
              !strncmp(c, "NOCARD ", 7) || !strncmp(c, "NOPUSH ", 7)) {
     const bool on = l[strlen(l) - 1] == '1';
     (c[0] == 'D' ? dryRun : c[0] == 'F' ? fakeCloud : c[1] == 'E' ? netFail : c[2] == 'C' ? noCard : noPush) = on;
-    Serial.printf("OK X %s\n", c);
+    usbSerial().printf("OK X %s\n", c);
   } else if (!strncmp(c, "SWEEPONLY", 9)) {  // X SWEEPONLY <prefix>: fake syncs touch only these notes
     sweepPrefix = c[9] == ' ' ? String(c + 10) : String();
-    Serial.printf("OK X %s\n", c);
+    usbSerial().printf("OK X %s\n", c);
   } else if (!strncmp(c, "FAILNOTE ", 9)) {
     failNotes = atoi(c + 9);
-    Serial.printf("OK X %s\n", c);
+    usbSerial().printf("OK X %s\n", c);
   } else if (!strncmp(c, "AUTOSYNC ", 9)) {  // X AUTOSYNC <s>: Notes' automatic sync interval (0 = the usual)
     autoSync = atoi(c + 9);
-    Serial.printf("OK X %s\n", c);
+    usbSerial().printf("OK X %s\n", c);
   } else if (!strncmp(c, "NOSAVE ", 7)) {  // X NOSAVE <0|1>: Notes can't write a note's text (as on a full card)
     noSave = l[strlen(l) - 1] == '1';
-    Serial.printf("OK X %s\n", c);
+    usbSerial().printf("OK X %s\n", c);
   } else if (!strncmp(c, "EMPTY ", 6)) {  // X EMPTY <0|1>: the canned transcription hears nothing
     emptyHeard = l[strlen(l) - 1] == '1';
-    Serial.printf("OK X %s\n", c);
+    usbSerial().printf("OK X %s\n", c);
   } else if (!strncmp(c, "WELCOME", 7)) {  // X WELCOME: the first-start screens, without wiping anything
     launcherShowWelcome();
-    Serial.println("OK X WELCOME");
+    usbSerial().println("OK X WELCOME");
   } else if (!strncmp(c, "FLASHFILE ", 10)) {  // X FLASHFILE <path> <bytes>: a file in internal flash (0: removed)
 #if UNIDEX_EMU
-    Serial.println("ERR");  // no internal flash in the browser
+    usbSerial().println("ERR");  // no internal flash in the browser
 #else
     char path[48] = "";
     long bytes = 0;
@@ -262,7 +264,7 @@ bool devUsb(const char *l) {
       LittleFS.remove(path);
     }
     if (ok) LittleFS.end();
-    Serial.println(ok ? "OK X FLASHFILE" : "ERR");
+    usbSerial().println(ok ? "OK X FLASHFILE" : "ERR");
 #endif
   } else if (!strncmp(c, "ADDLINE /", 9)) {  // X ADDLINE <path> <text>: adds a line to a card file (test data)
     const char *path = c + 8, *space = strchr(path, ' ');
@@ -270,7 +272,7 @@ bool devUsb(const char *l) {
     fs::File f = space ? storageOpen(p.c_str(), "a") : fs::File();
     const bool ok = f && f.print(String(space + 1) + "\n") == strlen(space + 1) + 1;
     if (f) f.close();
-    Serial.println(ok ? "OK X ADDLINE" : "ERR");
+    usbSerial().println(ok ? "OK X ADDLINE" : "ERR");
   } else if (!strncmp(c, "RMLINES /", 9)) {  // X RMLINES <path> <text>: removes a card file's lines holding text
     const char *path = c + 8, *space = strchr(path, ' ');
     const String p = space ? String(path).substring(0, space - path) : String(path), tmp = p + ".rm";
@@ -286,9 +288,9 @@ bool devUsb(const char *l) {
     bool ok = o && o.print(kept) == kept.length();
     if (o) o.close();
     ok = ok && storageReplace(tmp.c_str(), p.c_str(), kept.length());
-    Serial.printf("OK X RMLINES %d\n", ok ? removed : 0);
+    usbSerial().printf("OK X RMLINES %d\n", ok ? removed : 0);
   } else if (!strncmp(c, "RMFILE /", 8)) {  // X RMFILE <path>: removes one file from the card (test leftovers)
-    Serial.println(storageRemove(c + 7) ? "OK X RMFILE" : "ERR");
+    usbSerial().println(storageRemove(c + 7) ? "OK X RMFILE" : "ERR");
   } else if (!strncmp(c, "NOTE ", 5)) {  // X NOTE <id> <markdown as hex>: one note with this text (test data)
     char id[25] = "";
     const char *hex = strchr(c + 5, ' ');
@@ -298,7 +300,7 @@ bool devUsb(const char *l) {
       char pair[3] = {h[0], h[1], 0};
       md += (char)strtol(pair, nullptr, 16);
     }
-    Serial.println(storeValidId(id) && md.length() && storeSaveNote(id, md) ? "OK X NOTE" : "ERR");
+    usbSerial().println(storeValidId(id) && md.length() && storeSaveNote(id, md) ? "OK X NOTE" : "ERR");
   } else if (!strncmp(c, "NOTES ", 6)) {  // X NOTES <n>: n made-up notes (test-0001 ...) for long lists; 0 removes them
     const int n = atoi(c + 6);
     for (int i = 1; i <= 999; i++) {
@@ -308,22 +310,22 @@ bool devUsb(const char *l) {
       else if (storeReadNote(id).length()) storeDelete(id);
       powerAlive();  // hundreds of files take longer than the watchdog's 30 s
     }
-    Serial.printf("OK X NOTES %d\n", n);
+    usbSerial().printf("OK X NOTES %d\n", n);
   } else if (!strncmp(c, "AGENTREPLY ", 11)) {  // X AGENTREPLY <json>: as if the agent's model answered this
     agentReply(c + 11);
-    Serial.println("OK X AGENTREPLY");
+    usbSerial().println("OK X AGENTREPLY");
   } else if (!strncmp(c, "AGENT ", 6)) {  // X AGENT <words>: as if said to the agent (WiFi and the model for real)
     agentAsk(c + 6);
-    Serial.println("OK X AGENT");
+    usbSerial().println("OK X AGENT");
   } else if (!strncmp(c, "CLOCKSAY ", 9)) {  // X CLOCKSAY <words>: Clock does what they ask, as if said to it
-    Serial.printf("OK X CLOCKSAY %s\n", clockSay(c + 9));
+    usbSerial().printf("OK X CLOCKSAY %s\n", clockSay(c + 9));
   } else if (!strcmp(c, "CALSYNC")) {  // X CALSYNC: what Settings > Sync does (clock, then the calendar link)
     const SyncResult r = calendarSync();
-    Serial.printf("OK X CALSYNC clock=%s link=%d calendar=%s events=%d\n", r.clock ? r.clock : "ok", r.link,
+    usbSerial().printf("OK X CALSYNC clock=%s link=%d calendar=%s events=%d\n", r.clock ? r.clock : "ok", r.link,
                   r.calendar ? r.calendar : "ok", r.events);
   } else if (!strncmp(c, "FETCH", 5)) {  // X FETCH [<id>]: the store's list, or an app installed from it, over WiFi
 #if UNIDEX_EMU
-    Serial.println("ERR");  // no WiFi in the browser
+    usbSerial().println("ERR");  // no WiFi in the browser
 #else
     const char *why = netClaimed() ? "WiFi busy" : netConnect();
     if (!why && !c[5]) why = appfetchCatalogue();
@@ -332,15 +334,15 @@ bool devUsb(const char *l) {
       why = appfetchStatus().ok ? nullptr : appfetchStatus().why.c_str();
     }
     if (!netClaimed()) netOff();
-    Serial.printf("OK X FETCH %s\n", why ? why : "ok");
+    usbSerial().printf("OK X FETCH %s\n", why ? why : "ok");
 #endif
   } else if (!strcmp(c, "HANG")) {  // X HANG: the main loop stops; the watchdog should restart the device in 30 s
-    Serial.println("OK X HANG");
-    Serial.flush();
+    usbSerial().println("OK X HANG");
+    usbSerial().flush();
     for (;;) delay(100);
   } else if (!strncmp(c, "BATTMV ", 7)) {  // X BATTMV <mv>: pretend the battery reads this (0 = real)
     batteryFake(atoi(c + 7));
-    Serial.printf("OK X BATTMV %d\n", atoi(c + 7));
+    usbSerial().printf("OK X BATTMV %d\n", atoi(c + 7));
   } else if (!strncmp(c, "KEY ", 4)) {
     char name[16] = "", value[16] = "";
     if (sscanf(c + 4, "%15s %15s", name, value) == 2) {
@@ -348,13 +350,13 @@ bool devUsb(const char *l) {
       else storagePutInt(name, strtol(value, nullptr, 10));
     }
     const int32_t v = storageGetInt(name, INT32_MIN);  // INT32_MIN: not set
-    if (v == INT32_MIN) Serial.printf("OK X KEY %s none\n", name);
-    else Serial.printf("OK X KEY %s %ld\n", name, (long)v);
+    if (v == INT32_MIN) usbSerial().printf("OK X KEY %s none\n", name);
+    else usbSerial().printf("OK X KEY %s %ld\n", name, (long)v);
   } else if (!strncmp(c, "DEMO ", 5)) {
     demo = c[5] == '1';
-    Serial.printf("OK X %s\n", c);
+    usbSerial().printf("OK X %s\n", c);
   } else {
-    Serial.println("ERR");
+    usbSerial().println("ERR");
   }
   return true;  // (usbSyncPoll flushes the reply)
 }

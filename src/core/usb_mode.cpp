@@ -2,36 +2,39 @@
 
 #if UNIDEX_EMU
 bool usbModeAvailable() { return false; }
-void usbModeRequest(UsbMode) {}
+void usbReaderRequest() {}
 bool usbModeBegin() { return false; }
 void usbModePoll() {}
 bool usbModeTakeReturnToSettings() { return false; }
+bool usbHostConnected() { return false; }
+const char *usbWakePc() { return "USB wake unavailable"; }
+const char *usbSleepPc() { return "USB sleep unavailable"; }
 #else
 #include <Arduino.h>
 #include <USB.h>
 #include <USBHIDMouse.h>
+#include <USBHIDSystemControl.h>
 #include <atomic>
 #include <driver/sdmmc_host.h>
 #include <sdmmc_cmd.h>
 #include <device/dcd.h>
 #include <esp32-hal-tinyusb.h>
-#include <soc/rtc_cntl_reg.h>
 #include <soc/usb_reg.h>
 #include <soc/usb_struct.h>
 #include "display.h"
 #include "launcher.h"
 #include "storage.h"
 #include "theme.h"
+#include "usb_serial.h"
 
-// Keep normal firmware's HWCDC/Web Serial. TinyUSB takes the internal PHY only
-// in a separate boot, before HWCDC or any filesystem/application can start.
+// Select the USB interfaces once per boot. The reader owns the card and the
+// main loop. In normal operation the launcher runs alongside HID and CDC.
 static constexpr uint32_t READER_MAGIC = 0x554D5343;
 static constexpr uint32_t READER_VBUS_MAGIC = 0x554D5344;
 static constexpr uint32_t RETURN_MAGIC = 0x554D5254;
-static constexpr uint32_t WAKE_MAGIC = 0x55484944;
 static constexpr uint32_t EXIT_HOLD_MS = 2000, EJECT_GRACE_MS = 1000;
 RTC_NOINIT_ATTR static uint32_t requested;
-static UsbMode mode;
+static bool normalUsb, sleepReleasePending;
 static sdmmc_card_t card;
 static DMA_ATTR uint8_t sector[512];
 static std::atomic<bool> present{false}, ejected{false}, ioError{false};
@@ -39,10 +42,19 @@ static std::atomic<uint32_t> activeOperations{0}, ejectedAt{0};
 static bool failed, preventRemoval, usbStarted;
 static bool buttonDown, buttonRaw, exitArmed, returnToSettings;
 static uint32_t buttonAt, pressedAt;
-static const char *wakeStatus = "HID mouse over USB";
 static constexpr uint8_t WAKE_USB_PORT = 0;
 static constexpr int32_t SESSION_SETTLE_MS = 20;
 static std::atomic<uint32_t> wakeSessionEndAt{0};
+
+USBCDC &usbSerial() {
+  static USBCDC port;
+  return port;
+}
+
+static USBHIDSystemControl &systemControl() {
+  static USBHIDSystemControl control;
+  return control;
+}
 
 static bool wakeHasSession() {
   return (USB0.dcfg & USB_DEVADDR_M) && (USB0.gotgctl & USB_BSESVLD_M);
@@ -51,7 +63,7 @@ static bool wakeHasSession() {
 extern "C" void __real_dcd_event_handler(const dcd_event_t *event, bool inIsr);
 
 extern "C" void __wrap_dcd_event_handler(const dcd_event_t *event, bool inIsr) {
-  if (mode == UsbMode::Wake) {
+  if (normalUsb) {
     // The bundled ESP32-S3 DCD can report session end on entry to PC sleep,
     // even when the controller retains an addressed session in suspend.
     if (inIsr && event->event_id == DCD_EVENT_UNPLUGGED && (USB0.dcfg & USB_DEVADDR_M) && tud_mounted()) {
@@ -81,7 +93,7 @@ static void pollWakeSession() {
 extern "C" void __real_dcd_remote_wakeup(uint8_t port);
 
 extern "C" void __wrap_dcd_remote_wakeup(uint8_t port) {
-  if (mode != UsbMode::Wake) {
+  if (!normalUsb) {
     __real_dcd_remote_wakeup(port);
     return;
   }
@@ -173,19 +185,15 @@ bool usbModeTakeReturnToSettings() {
   return returning;
 }
 
-void usbModeRequest(UsbMode next) {
+void usbReaderRequest() {
   storageEnd();
-  if (next == UsbMode::Wake) {
-    requested = WAKE_MAGIC;
-    // Detach the serial device before presenting a new USB identity on the same port.
-    Serial.end();
-    delay(250);
-    systemRestart("USB wake PC");
-    return;
-  }
   // Carry a verified high across this deliberate reboot so unplugging during
   // the restart/display refresh is still detected in the reader boot.
   requested = vbusArmBeforeRestart() ? READER_VBUS_MAGIC : READER_MAGIC;
+  if (usbStarted) {
+    tud_disconnect();
+    delay(250);
+  }
   systemRestart("USB card reader");
 }
 
@@ -357,64 +365,52 @@ static void beginReader() {
   }
 }
 
-static void beginWakeMouse() {
-  // Its constructor registers HID with TinyUSB. Only construct it in this mode.
+static void beginNormalUsb() {
+  normalUsb = true;
+  // The constructors register the interfaces before TinyUSB starts.
   static USBHIDMouse mouse;
   mouse.begin();
-  USB.PID(0x4004);  // Espressif's TinyUSB HID PID, separate from native Serial/JTAG
-  USB.productName("Unidex Wake Mouse");
-  USB.usbClass(TUSB_CLASS_UNSPECIFIED);
-  USB.usbSubClass(0);
-  USB.usbProtocol(0);
+  systemControl().begin();
+  usbSerial().setRxBufferSize(4096);  // room for a whole calendar sync during a screen refresh
+  usbSerial().begin(115200);
+  USB.PID(0x4005);  // Espressif's TinyUSB CDC + HID PID
+  USB.productName("Unidex");
   USB.usbAttributes(TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP);
   usbStarted = USB.begin();
-  failed = !usbStarted;
   if (usbStarted) USB0.gintmsk |= USB_WKUPINTMSK_M;
 }
 
-static void drawWake() {
-  display.fillScreen(WHITE);
-  display.setTextColor(BLACK);
-  drawHeader("USB wake PC");
-  display.setFont(FONT_SMALL);
-  drawCentered(failed ? "USB mouse unavailable" : wakeStatus, 60);
-  if (failed) {
-    drawCentered("PWR: return", 120);
-  } else {
-    drawCentered("Tap PWR to wake PC", 100);
-    drawCentered(exitArmed ? "Release PWR to return" : "Hold PWR 2s to return", 135);
-  }
+bool usbHostConnected() {
+  return normalUsb && usbStarted && tud_mounted() && wakeHasSession();
 }
 
-static void wakePc() {
-  if (!tud_mounted() || !wakeHasSession()) {
-    wakeStatus = "USB is not connected";
-  } else if (!(USB0.dsts & USB_SUSPSTS_M)) {
-    wakeStatus = "USB is active";
-  } else {
-    if (!tud_suspended()) dcd_event_bus_signal(WAKE_USB_PORT, DCD_EVENT_SUSPEND, false);
-    wakeStatus = tud_remote_wakeup() ? "Wake signal sent" : "PC did not arm wake";
-  }
-  displayShow(drawWake, false);
+const char *usbWakePc() {
+  if (!usbHostConnected()) return "USB is not connected";
+  if (!(USB0.dsts & USB_SUSPSTS_M)) return "USB is active";
+  if (!tud_suspended()) dcd_event_bus_signal(WAKE_USB_PORT, DCD_EVENT_SUSPEND, false);
+  return tud_remote_wakeup() ? nullptr : "PC did not arm wake";
+}
+
+const char *usbSleepPc() {
+  if (!usbHostConnected()) return "USB is not connected";
+  if (USB0.dsts & USB_SUSPSTS_M) return "USB is suspended";
+  if (sleepReleasePending || !tud_hid_ready()) return "USB HID is busy";
+  // The press can reach Windows even if we time out waiting for completion.
+  // Release it as soon as the host accepts another report.
+  sleepReleasePending = true;
+  return systemControl().press(SYSTEM_CONTROL_STANDBY) ? nullptr : "Sleep report was not confirmed";
 }
 
 bool usbModeBegin() {
   const uint32_t request = esp_reset_reason() == ESP_RST_SW ? requested : 0;
   returnToSettings = request == RETURN_MAGIC;
   requested = 0;  // crash/reset/power loss returns to the app, never a boot loop
-  const bool reader = request == READER_MAGIC || request == READER_VBUS_MAGIC;
-  if (!reader && request != WAKE_MAGIC) {
-    // The RTC PHY selector can survive a software reset. Restore the same
-    // hardware routing used by Arduino's usb_switch_to_cdc_jtag before Serial.
-    CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG,
-                       RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL | RTC_CNTL_USB_PAD_ENABLE);
+  if (request != READER_MAGIC && request != READER_VBUS_MAGIC) {
+    beginNormalUsb();
     return false;
   }
-  mode = reader ? UsbMode::Reader : UsbMode::Wake;
-  if (reader) {
-    setCpuFrequencyMhz(240);
-    vbusBegin(request == READER_VBUS_MAGIC);
-  }
+  setCpuFrequencyMhz(240);
+  vbusBegin(request == READER_VBUS_MAGIC);
   // Do not call inputInit: its emergency two-button restart would cut off a
   // mounted writable drive. The dedicated PWR exit below drains raw I/O first.
   pinMode(0, INPUT_PULLUP);
@@ -423,9 +419,8 @@ bool usbModeBegin() {
   buttonAt = millis();
   pressedAt = buttonAt;
   displayInit(true);
-  if (reader) beginReader();
-  else beginWakeMouse();
-  displayShow(reader ? drawReader : drawWake, true);
+  beginReader();
+  displayShow(drawReader, true);
   return true;
 }
 
@@ -459,8 +454,14 @@ static void pollReader() {
 }
 
 void usbModePoll() {
-  if (mode == UsbMode::Reader) pollReader();
-  else if (usbStarted) pollWakeSession();
+  if (normalUsb) {
+    if (usbStarted) {
+      pollWakeSession();
+      if (sleepReleasePending && tud_hid_ready() && systemControl().release()) sleepReleasePending = false;
+    }
+    return;
+  }
+  pollReader();
   const uint32_t now = millis();
   const bool down = digitalRead(18) == LOW;
   if (down != buttonRaw) {
@@ -471,14 +472,13 @@ void usbModePoll() {
     buttonDown = buttonRaw;
     if (buttonDown) pressedAt = now;
     else if (failed || exitArmed) returnToApp();
-    else if (mode == UsbMode::Wake) wakePc();
   }
   // A deliberate fallback for hosts which omit START STOP UNIT on eject, or
   // an already unplugged cable. Host-cached writes cannot be recovered here;
   // the display explicitly requires host eject/unplug before this gesture.
   if (!failed && buttonDown && !exitArmed && now - pressedAt >= EXIT_HOLD_MS) {
     exitArmed = true;
-    displayShow(mode == UsbMode::Reader ? drawReader : drawWake, false);
+    displayShow(drawReader, false);
   }
   delay(10);  // no launcher, sync, background apps, or automatic sleep
 }

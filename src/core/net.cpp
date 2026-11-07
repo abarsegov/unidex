@@ -102,6 +102,32 @@ const char *netConnect() {
   return missing ? "WiFi not found" : "WiFi failed";
 }
 
+bool netConnecting() { return begun && WiFi.status() != WL_CONNECTED; }
+
+// Keep trying in the background without blocking the main loop or taking the radio from a job.
+void netBackgroundPoll() {
+  static uint32_t retryAt;
+  if (netClaimed()) return;
+  if (WiFi.status() == WL_CONNECTED) {
+    retryAt = 0;
+    return;
+  }
+  if (!begun) {
+    if (retryAt && (int32_t)(millis() - retryAt) < 0) return;
+    retryAt = millis() + 30000;
+    netBegin();
+    return;
+  }
+  const wl_status_t st = WiFi.status();
+  if (millis() - attemptAt > 1500 &&
+      (st == WL_NO_SSID_AVAIL || st == WL_CONNECT_FAILED || millis() - attemptAt > attemptMs)) {
+    if (!nextNetwork()) {
+      netOff();
+      retryAt = millis() + 30000;
+    }
+  }
+}
+
 static volatile bool claimed;
 void netClaim(bool on) { claimed = on; }
 bool netClaimed() { return claimed; }
@@ -111,6 +137,11 @@ void netOff() {
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
   setCpuFrequencyMhz(80);
+}
+
+void netRelease() {
+  if (WiFi.status() == WL_CONNECTED) setCpuFrequencyMhz(160);
+  else netOff();
 }
 
 static bool readLine(WiFiClientSecure &c, String &line) {

@@ -81,15 +81,16 @@ const char *linkStart() {
   if (!queue) queue = xQueueCreate(16, sizeof(LinkPacket));
   netClaim(true);
   powerHold();  // light sleep would turn the radio off
+  netOff();     // leave the LAN before changing the station MAC and channel
   setCpuFrequencyMhz(160);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);  // modem sleep misses packets
   uint8_t mac[6];
   esp_fill_random(mac, sizeof mac);
   mac[0] = (mac[0] & 0xFC) | 0x02;  // locally administered, single device
-  esp_wifi_set_mac(WIFI_IF_STA, mac);
-  esp_wifi_set_channel(CHANNEL, WIFI_SECOND_CHAN_NONE);
-  if (esp_now_init() != ESP_OK || esp_now_register_recv_cb(received) != ESP_OK || !addPeer(BROADCAST)) {
+  if (esp_wifi_set_mac(WIFI_IF_STA, mac) != ESP_OK ||
+      esp_wifi_set_channel(CHANNEL, WIFI_SECOND_CHAN_NONE) != ESP_OK ||
+      esp_now_init() != ESP_OK || esp_now_register_recv_cb(received) != ESP_OK || !addPeer(BROADCAST)) {
     esp_now_deinit();
     netOff();
     netClaim(false);

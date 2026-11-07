@@ -2,6 +2,7 @@
 // as used by Waveshare's 08_Audio_Test for this board. That library needs ESP-IDF 5, so this is a small
 // standalone version on the legacy I2S driver and the Wire bus the clock chip already uses.
 #include "audio.h"
+#include "usb_serial.h"
 #include "ringtones.h"
 #include <Arduino.h>
 #include <Wire.h>
@@ -92,7 +93,7 @@ static bool start(bool play, int buffers = 16) {
 
   if (!configureCodec()) {
 #if DEBUG
-    Serial.printf("audio: ES8311 not answering (id %02x)\n", readReg(0xFD));
+    usbSerial().printf("audio: ES8311 not answering (id %02x)\n", readReg(0xFD));
 #endif
     i2s_driver_uninstall(PORT);
     return false;

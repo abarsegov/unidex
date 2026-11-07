@@ -24,7 +24,7 @@ static Button buttons[] = {
   {18, Event::BShort, Event::BLong, false, false, 0},
 };
 static Event pending = Event::None;  // a wake tap that was over before we could see it
-static bool resetSent;
+static bool bothPressed, resetSent;
 
 // Restarts even when the main loop is stuck and the screen frozen: a small task of its own, on the other core,
 // watches the buttons. Both held GUARD_MS, then let go: restart. It waits for the release because A is GPIO0,
@@ -138,28 +138,34 @@ Event inputPoll() {
     return e;
   }
   uint32_t now = millis();
-  // Both held: neither gives its own events (no "home" on the way to a restart), and after RESET_MS: Reset.
+  Event shortEvent = Event::None;
+  for (Button &b : buttons) {
+    const bool pressed = digitalRead(b.pin) == LOW;
+    if (pressed == b.down || now - b.changedAt <= DEBOUNCE_MS) continue;
+    b.down = pressed;
+    b.changedAt = now;
+    if (pressed) b.longSent = false;
+    else if (!b.longSent) shortEvent = b.shortEv;
+  }
+
   Button &a = buttons[0], &b = buttons[1];
   if (a.down && b.down) {
+    bothPressed = true;
     a.longSent = b.longSent = true;
     if (!resetSent && now - max(a.changedAt, b.changedAt) >= RESET_MS) {
       resetSent = true;
       return Event::Reset;
     }
-  } else {
-    resetSent = false;
   }
+  if (bothPressed) {
+    if (a.down || b.down) return Event::None;
+    const Event event = resetSent ? Event::None : Event::WakePc;
+    bothPressed = false;
+    resetSent = false;
+    return event;
+  }
+  if (shortEvent != Event::None) return shortEvent;
   for (Button &b : buttons) {
-    bool pressed = digitalRead(b.pin) == LOW;
-    if (pressed != b.down && now - b.changedAt > DEBOUNCE_MS) {
-      b.down = pressed;
-      b.changedAt = now;
-      if (pressed) {
-        b.longSent = false;
-      } else if (!b.longSent) {
-        return b.shortEv;
-      }
-    }
     // Long fires while still held, so the user knows when to let go.
     if (b.down && !b.longSent && now - b.changedAt >= LONG_MS) {
       b.longSent = true;

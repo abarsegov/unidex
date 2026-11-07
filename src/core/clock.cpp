@@ -1,4 +1,5 @@
 #include "clock.h"
+#include "usb_serial.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <Wire.h>
@@ -147,7 +148,7 @@ const char *clockSyncOnline() {
     }
   }
 #if DEBUG
-  Serial.printf("clock: %s\n", ok ? (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED ? "ntp" : "web") : "none");
+  usbSerial().printf("clock: %s\n", ok ? (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED ? "ntp" : "web") : "none");
 #endif
   if (ok) writeChipNow();
   return ok ? nullptr : "no time server";
@@ -158,10 +159,10 @@ const char *clockSync() {
   const char *err = netConnect();  // the WiFi saved from the website's Setup page
   if (!err) {
     err = clockSyncOnline();
-    netOff();
+    netRelease();
   }
 #if DEBUG
-  Serial.printf("sync: %s, WiFi mode %d (0 = off)\n", err ? err : "ok", (int)WiFi.getMode());
+  usbSerial().printf("sync: %s, WiFi mode %d (0 = off)\n", err ? err : "ok", (int)WiFi.getMode());
 #endif
   return err;
 }

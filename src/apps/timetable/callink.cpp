@@ -101,6 +101,6 @@ SyncResult calendarSync() {
     if (!r.calendar && !usbSyncSaveEvents(lines)) r.calendar = "Couldn't save the calendar";
     r.events = lines.size();
   }
-  netOff();
+  netRelease();
   return r;
 }

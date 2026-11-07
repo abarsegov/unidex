@@ -289,6 +289,7 @@ max-width:560px;margin:0;padding:7px 9px 7px 16px;min-height:66px}
 <div class="card" id="cName"><div class="ch"><i class="ic sand"><svg viewBox="0 0 24 24"><path d="M3.5 12.6V4.5a1 1 0 011-1h8.1a1 1 0 01.7.3l7.4 7.4a1 1 0 010 1.4l-8.1 8.1a1 1 0 01-1.4 0l-7.4-7.4a1 1 0 01-.3-.7z"/><circle cx="8" cy="8" r="1.4"/></svg></i><div><h2>Name</h2><p class="hint">What your unidex is called. Its WiFi takes the name the next time it starts.</p></div></div>
 <label class="field"><span>Name <i>(up to 20 characters)</i></span><input class="input" id="dname" maxlength="20" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="done"></label>
 <button class="btn" id="nameSave" data-save>Save</button><p class="say" id="nameSay" role="status"></p></div>
+<div class="card hidden" id="wakeCard"><h2>PC power</h2><p class="hint">Control the connected computer. Sleep depends on its Windows settings.</p><button class="btn" id="wakePc">Wake PC</button> <button class="btn" id="sleepPc">Sleep PC</button><p class="say" id="wakeSay" role="status"></p></div>
 <div class="card"><div class="ch"><i class="ic lilac"><svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z"/></svg></i><div><h2>Sleep after</h2><p class="hint">How long it stays on after the last button press.</p></div></div>
 <div class="seg" role="radiogroup" aria-label="Sleep after" style="margin:0"><label><input type="radio" name="sleep" value="10"><span>10 s</span></label><label><input type="radio" name="sleep" value="20"><span>20 s</span></label><label><input type="radio" name="sleep" value="30"><span>30 s</span></label><label><input type="radio" name="sleep" value="60"><span>1 min</span></label></div>
 <p class="say" id="sleepSay" role="status"></p></div>
@@ -604,6 +605,10 @@ if(p)return tell(say,p,'bad');if(!Object.keys(v).length)return tell(say,'Nothing
 busy(b,true);post('/set',v).then(loadSetup).then(function(){tell(say,'');saved(b)},function(e){busy(b,false);tell(say,e.message,'bad')})}});
 $('clearAll').onclick=function(){var b=this;twoTap(b,'Tap again to remove it all',function(){busy(b,true,'Removing…');
 post('/clear',{}).then(loadSetup).then(function(){busy(b,false);tell('clearSay','Removed. WiFi and keys are gone from this unidex.','ok')},function(e){busy(b,false);tell('clearSay',e.message,'bad')})})};
+fetch('/panel-mode').then(function(r){return r.json()}).then(function(o){if(o.lan)$('wakeCard').classList.remove('hidden')});
+function pcPower(b,path){busy(b,true,'Sending...');post(path,{}).then(function(){busy(b,false);tell('wakeSay','Command sent.','ok')},function(e){busy(b,false);tell('wakeSay',e.message,'bad')})}
+$('wakePc').onclick=function(){pcPower(this,'/wake-pc')};
+$('sleepPc').onclick=function(){pcPower(this,'/sleep-pc')};
 function done(b){busy(b,true,'Closing…');post('/done',{}).then(function(){$('bye').classList.remove('hidden')},function(e){busy(b,false);toast(e.message)})}
 // --- Tools: the badge maker and the Pet, made on the phone and sent with a POST ---
 // The badge: a photo -> 200x200 grey -> black and white (dithered if it's a photo) -> a 1-bit BMP, as the website's

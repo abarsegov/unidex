@@ -7,6 +7,7 @@ static const char *NO_NET = "Not in the demo";
 const char *netConnect() { return NO_NET; }
 const char *netBegin() { return NO_NET; }
 void netOff() {}
+void netRelease() {}
 void netClaim(bool) {}
 bool netClaimed() { return false; }
 int netHttps(const char *, const char *, const char *, const String &, const NetPart *, int, String &, size_t) { return -1; }

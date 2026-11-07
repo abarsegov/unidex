@@ -1,4 +1,5 @@
 #include "storage.h"
+#include "usb_serial.h"
 #include <LittleFS.h>  // only for the one-time copy from internal flash
 #include <Preferences.h>
 #include <SD_MMC.h>
@@ -365,25 +366,25 @@ static void listCard(const char *dir) {
   for (fs::File f = d ? d.openNextFile() : fs::File(); f; f = d.openNextFile()) {
     String path = String(dir) + (strcmp(dir, "/") ? "/" : "") + f.name();
     if (f.isDirectory()) {
-      Serial.printf("D %s\n", path.c_str());
+      usbSerial().printf("D %s\n", path.c_str());
       if (strcmp(dir, "/") == 0) listCard(path.c_str());  // one level down is enough (badges/)
     } else {
-      Serial.printf("F %s %u\n", path.c_str(), (unsigned)f.size());
+      usbSerial().printf("F %s %u\n", path.c_str(), (unsigned)f.size());
     }
   }
 }
 
 void storageCardTest() {
   if (!storageCardMount()) {
-    Serial.println("OK S none (no card, or not FAT32)");
+    usbSerial().println("OK S none (no card, or not FAT32)");
     return;
   }
   static const char *TYPES[] = {"none", "MMC", "SD", "SDHC", "unknown"};
   const uint8_t type = SD_MMC.cardType();
-  Serial.printf("OK S ok %s %llu MB, %llu MB used\n", TYPES[type < 4 ? type : 4],
+  usbSerial().printf("OK S ok %s %llu MB, %llu MB used\n", TYPES[type < 4 ? type : 4],
                 SD_MMC.cardSize() / (1024 * 1024), SD_MMC.usedBytes() / (1024 * 1024));
   listCard("/");
-  Serial.println("OK S end");
+  usbSerial().println("OK S end");
 }
 
 void storageCardUnmount() {

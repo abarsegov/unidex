@@ -20,6 +20,7 @@
 #include "../notes/job.h"
 #include "../notes/phone.h"
 #include "../pet/meet.h"
+#include "../scripts/appfetch.h"
 #include "../timetable/callink.h"
 #include "../notes/languages.h"
 #include "../../core/credentials.h"
@@ -32,7 +33,7 @@ static const char *VERSION = UNIDEX_VERSION;  // from git, tools/version.py
 static const int SLEEP_CHOICES[] = {10, 20, 30, 60};
 static const int ROW_H = 22, PAGE_ROWS = 6;  // six rows fit above the hints
 
-enum Screen : uint8_t { LIST, DATETIME, INFO, RESET, CONFIRM, CONFIRM_AGAIN, VOLUME, PHONE, CHECK, SYNC };
+enum Screen : uint8_t { LIST, DATETIME, INFO, RESET, CONFIRM, CONFIRM_AGAIN, VOLUME, PHONE, CHECK, SYNC, LAN_INFO };
 enum Row : uint8_t { DATE, SYNC_ROW, SLEEP, SAVER, VOLUME_ROW, ALERTS, RINGTONE, LANGUAGE, INVERT, INFO_ROW, RESET_ROW, LAN, CARD_READER, USB_WAKE, ROWS };
 enum Reset : uint8_t { CALENDAR, PET_FRIENDS, EVERYTHING, FACTORY, RESETS };
 static const char *RESET_NAMES[] = {"Calendar", "Pet friends", "Everything", "Factory reset"};
@@ -41,6 +42,7 @@ enum Field : uint8_t { YEAR, MONTH, DAY, HOUR, MINUTE, SAVE, FIELDS };
 
 RTC_DATA_ATTR static uint8_t screen, cursor, resetCursor, field;
 RTC_DATA_ATTR static int16_t value[MINUTE + 1];  // the date being edited: y, m, d, h, min
+static String shownLanUrl;
 
 static int daysIn(int year, int month) {
   static const int DAYS[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
@@ -122,7 +124,7 @@ static void drawList() {
       case RESET_ROW: drawRow(i, sel, "Reset data", ">"); break;
       case LAN: drawRow(i, sel, "LAN panel", ">"); break;
       case CARD_READER: drawRow(i, sel, "USB card reader", ">"); break;
-      case USB_WAKE: drawRow(i, sel, "USB wake PC", ">"); break;
+      case USB_WAKE: drawRow(i, sel, "Wake PC", ">"); break;
     }
   }
   drawHints("next", cursor == SLEEP || cursor == SAVER || cursor == INVERT || cursor == ALERTS || cursor == RINGTONE || cursor == LANGUAGE ? "change" : "open", "phone");
@@ -479,13 +481,17 @@ static Redraw onButton(Event e) {
           displaySetInverted(!display.inverted);
           return Redraw::Full;  // every pixel changes
         } else if (cursor == LAN) {
-          if (const char *low = batteryTooLow()) launcherToast(low);
-          else if (const char *err = phoneStart(PhoneTab::Settings, PhoneAccess::Lan)) launcherToast(err);
-          else screen = PHONE;
-        } else if (cursor == CARD_READER || cursor == USB_WAKE) {
+          screen = LAN_INFO;
+        } else if (cursor == CARD_READER) {
           if (!usbModeAvailable()) launcherToast("USB mode unavailable");
-          else if (jobBusy() || netClaimed()) launcherToast("Busy: try again");
-          else usbModeRequest(cursor == CARD_READER ? UsbMode::Reader : UsbMode::Wake);
+          else if (jobBusy() || netClaimed() || appfetchBusy()) launcherToast("Busy: try again");
+          else {
+            phoneLanStop();
+            usbReaderRequest();
+          }
+        } else if (cursor == USB_WAKE) {
+          const char *error = usbWakePc();
+          launcherToast(error ? error : "Wake signal sent");
         } else {
           screen = cursor == INFO_ROW ? INFO : RESET;
           resetCursor = 0;
@@ -497,6 +503,10 @@ static Redraw onButton(Event e) {
       } else {
         return Redraw::None;
       }
+      return Redraw::Partial;
+    case LAN_INFO:
+      if (e != Event::AShort) return Redraw::None;
+      screen = LIST;
       return Redraw::Partial;
     case PHONE:
       phoneActivity();  // any press keeps the hotspot up
@@ -582,6 +592,11 @@ static void draw() {
   if ((screen == PHONE && !phoneOn()) || (screen == CHECK && !checks)) screen = LIST;  // e.g. after a sleep
   switch (screen) {
     case PHONE: phoneDraw("Set up on phone"); break;
+    case LAN_INFO:
+      shownLanUrl = phoneLanUrl();
+      phoneLanDraw();
+      drawHints("back", "", "");
+      break;
     case CHECK: drawCheck(); break;
     case DATETIME: drawDateTime(); break;
     case INFO: drawInfo(); break;
@@ -595,6 +610,7 @@ static void draw() {
 }
 
 static Redraw tick() {
+  if (screen == LAN_INFO) return shownLanUrl == phoneLanUrl() ? Redraw::None : Redraw::Partial;
   if (screen == PHONE) {
     const Redraw r = phoneTick();
     if (phoneOn()) return r;

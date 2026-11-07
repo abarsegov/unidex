@@ -1,4 +1,5 @@
 #include "luahost.h"
+#include "../../core/usb_serial.h"
 #include <climits>  // first: C++ gets LLONG_MAX from here, which luaconf.h needs for 64-bit integers
 #include <lua.hpp>
 #include <qrcode.h>
@@ -371,9 +372,9 @@ static int l_random(lua_State *s) {
 
 static int l_print(lua_State *s) {
 #if UNIDEX_DEV
-  Serial.printf("LUA %s:", id.c_str());
-  for (int i = 1; i <= lua_gettop(s); i++) Serial.printf(" %s", luaL_tolstring(s, i, nullptr)), lua_pop(s, 1);
-  Serial.println();
+  usbSerial().printf("LUA %s:", id.c_str());
+  for (int i = 1; i <= lua_gettop(s); i++) usbSerial().printf(" %s", luaL_tolstring(s, i, nullptr)), lua_pop(s, 1);
+  usbSerial().println();
 #endif
   return 0;
 }
@@ -592,7 +593,7 @@ static void fail(const char *why) {
   error = why;
   if (L) lua_close(L);
   L = nullptr;
-  if (usedWifi) netOff();
+  if (usedWifi) netRelease();
   usedWifi = false;
 }
 
@@ -711,7 +712,7 @@ void hostStop() {
   if (L && call("onExit", defined)) lua_pop(L, 1);
   if (L) lua_close(L);
   L = nullptr;
-  if (usedWifi) netOff();
+  if (usedWifi) netRelease();
   usedWifi = false;
 }
 

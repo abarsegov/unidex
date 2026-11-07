@@ -281,7 +281,7 @@ static void think(int16_t *samples, size_t count) {
     working("Thinking...");
     err = cloudAgent(systemText().c_str(), heard, reply);
   }
-  netOff();
+  netRelease();
   netClaim(false);
   powerRelease();
   if (err) return fail(err);

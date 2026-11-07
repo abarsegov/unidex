@@ -1,4 +1,6 @@
 #include "battery.h"
+#include "usb_serial.h"
+#include "usb_mode.h"
 #include <Arduino.h>
 #include <esp_system.h>
 #include "battery_logic.h"
@@ -80,7 +82,7 @@ static uint32_t callCount;
 void batteryPrintCalls() {
   for (uint32_t i = callCount > 300 ? callCount - 300 : 0; i < callCount; i++) {
     const Call &c = calls[i % 300];
-    Serial.printf("BC %lu %d %d %d %d\n", (unsigned long)c.ms, c.mv, c.plugged, c.charging, c.pct);
+    usbSerial().printf("BC %lu %d %d %d %d\n", (unsigned long)c.ms, c.mv, c.plugged, c.charging, c.pct);
   }
 }
 #endif
@@ -92,7 +94,7 @@ int batteryPercent() {
   const int pct = battery::update(state, mv, charging, millis());
   keep();
 #if UNIDEX_DEV
-  calls[callCount++ % 300] = {millis(), (int16_t)mv, (int8_t)pct, (uint8_t)HWCDC::isPlugged(), (uint8_t)charging};
+  calls[callCount++ % 300] = {millis(), (int16_t)mv, (int8_t)pct, (uint8_t)usbHostConnected(), (uint8_t)charging};
 #endif
   return pct;
 }
@@ -110,7 +112,7 @@ bool batteryCharging() {
 #if UNIDEX_DEV
   if (fakeMv) return fakeMv >= 4190;  // a pretend reading: as if on battery
 #endif
-  return HWCDC::isPlugged() || batteryMillivolts() >= 4190;  // the charger holds 4.20 V while topping up
+  return usbHostConnected() || batteryMillivolts() >= 4190;  // the charger holds 4.20 V while topping up
 }
 
 bool batteryToppingUp() {

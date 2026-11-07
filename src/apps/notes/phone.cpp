@@ -30,6 +30,8 @@
 #include "../../core/net.h"
 #include "../../core/power.h"
 #include "../../core/theme.h"
+#include "../../core/usb_mode.h"
+#include "../../core/link.h"
 
 #if UNIDEX_DEV
 static const uint32_t IDLE_MS = 60000;  // test build: a minute, so the auto-stop can be tested
@@ -41,7 +43,10 @@ static const uint32_t MAX_MS = 20 * 60000;  // however busy the phone keeps it, 
 static WiFiServer http(80, 8);
 static DNSServer dns;  // every name the phone looks up points here, so its internet check finds this page
 static bool on;
-static bool lanMode;
+static bool lanActive;
+static bool lanCatalogueChecked;
+static char lanPassword[12], lanUrl[40];
+static uint32_t lanDisconnectAt;
 static IPAddress panelAddress;
 static String lanAuthorization;
 static uint32_t lastUse, served, startedAt, firstAt;  // firstAt: the first request from a phone
@@ -65,7 +70,7 @@ static uint32_t joinedAt, addressAt;
 static char reqLog[96];  // the last requests and how long each took
 static char times[200];
 static const char *phoneTimes() {
-  if (lanMode) {
+  if (lanActive) {
     snprintf(times, sizeof times, "lan=%s pw=%s online=%d%s", WiFi.localIP().toString().c_str(), password,
              WiFi.status() == WL_CONNECTED, reqLog);
     return times;
@@ -465,7 +470,12 @@ static void post(WiFiClient &c, const Request &r) {
   else if (r.path == "/name") error = saveName(r.body);
   else if (r.path == "/clear") {  // Remove everything: WiFi, keys, GitHub, the calendar link
     if (jobBusy()) error = "A note is sending. Try again in a moment.";
-    else credClearAll(), changed = false, error = nullptr;
+    else {
+      credClearAll();
+      changed = false;
+      error = nullptr;
+      if (lanActive) lanDisconnectAt = millis() + 500;  // send the reply before leaving WiFi
+    }
   } else if (r.path == "/badge") {
     String file;
     error = saveBadge(r.body, file);
@@ -502,7 +512,12 @@ static void post(WiFiClient &c, const Request &r) {
     error = installApp(formValue(r.body, "id"));
   } else if (r.path == "/apps/delete") {
     error = deleteApp(formValue(r.body, "id"));
+  } else if (r.path == "/wake-pc" || r.path == "/sleep-pc") {
+    if (!lanActive) error = "Available from the LAN panel.";
+    else if (r.origin != "http://" + panelAddress.toString()) error = "Not from this page.";
+    else error = r.path == "/wake-pc" ? usbWakePc() : usbSleepPc();
   } else if (r.path == "/done") {
+    if (lanActive) return reply(c, 200, "application/json", answer(nullptr));
     stopAt = millis() + 500;  // the answer goes out first
     done = true;
     error = nullptr;
@@ -549,7 +564,7 @@ static void handle(Connection &conn, const Request &r) {
   const uint32_t t0 = millis();
   const String self = panelAddress.toString();
   if (r.path == "/favicon.ico" || r.path.startsWith("/apple-touch-icon")) return reply(c, 204, "text/plain", "", 0);
-  if (lanMode) {
+  if (lanActive) {
     if (r.host != self) return reply(c, 400, "text/plain", "Open the address shown on Unidex.");
     if (!lanAuthorization.length() || r.authorization != lanAuthorization)
       return reply(c, 401, "text/plain", "Use the login code shown on Unidex.", "WWW-Authenticate: Basic realm=\"Unidex LAN\"\r\n");
@@ -569,6 +584,8 @@ static void handle(Connection &conn, const Request &r) {
     if (r.origin.length() && r.origin != "http://" + self) reply(c, 400, "application/json", answer("Not from this page."));
     else post(c, r);
     logRequest("save", t0);
+  } else if (r.path == "/panel-mode") {
+    reply(c, 200, "application/json", lanActive ? "{\"lan\":1}" : "{\"lan\":0}");
   } else if (r.path == "/badges.json") {
     reply(c, 200, "application/json", badgesJson());
     logRequest("badges", t0);
@@ -579,6 +596,10 @@ static void handle(Connection &conn, const Request &r) {
     reply(c, 200, "application/json", petPartsJson());
     logRequest("pet", t0);
   } else if (r.path == "/apps.json") {
+    if (lanActive && !lanCatalogueChecked && !netClaimed()) {
+      lanCatalogueChecked = true;
+      appfetchCatalogue();  // keep the cached list if the store is unavailable
+    }
     sendCatalogue(c);
     logRequest("apps", t0);
   } else if (r.path == "/installed.json") {
@@ -588,6 +609,7 @@ static void handle(Connection &conn, const Request &r) {
     reply(c, 200, "application/json", setupJson());
     logRequest("setup", t0);
   } else if (r.path == "/notes.json") {
+    if (lanActive) buildList();
     reply(c, 200, "application/json", listJson);
     logRequest("list", t0);
   } else if (r.path == "/note.json") {
@@ -605,6 +627,7 @@ static void handle(Connection &conn, const Request &r) {
     startAudio(conn, r);
     logRequest("audio", t0);
   } else {
+    if (lanActive) buildList();
     sendPage(c);
     logRequest("page", t0);
   }
@@ -637,7 +660,7 @@ static Request parseRequest(const String &head, int end) {
   const int colon = r.host.indexOf(':');
   if (colon >= 0) r.host = r.host.substring(0, colon);
   r.origin = headerValue(head, lower, "\norigin:");
-  if (lanMode) r.authorization = headerValue(head, lower, "\nauthorization:");
+  if (lanActive) r.authorization = headerValue(head, lower, "\nauthorization:");
   r.body = head.substring(end + 4);
   return r;
 }
@@ -746,11 +769,11 @@ static const char *startHotspot() {
   return nullptr;
 }
 
-const char *phoneStart(PhoneTab startTab, PhoneAccess access) {
+const char *phoneStart(PhoneTab startTab) {
   tab = startTab;
   if (on) return nullptr;
   if (netClaimed()) return "Sending a note: try soon";
-  lanMode = access == PhoneAccess::Lan;
+  phoneLanStop();
   // No look-alike characters (l/1, O/0), so the code can be typed from the screen.
   static const char ALPHABET[] = "abcdefghjkmnpqrstuvwxyz23456789";
   for (size_t i = 0; i < sizeof password - 2; i++) password[i] = ALPHABET[esp_random() % (sizeof ALPHABET - 1)];
@@ -758,28 +781,12 @@ const char *phoneStart(PhoneTab startTab, PhoneAccess access) {
   buildList();
   netOff();
   setCpuFrequencyMhz(240);
-  if (lanMode) {
-    nearby = "[]";
-    displayShow(drawLooking, false);
-    if (const char *err = netConnect()) {
-      netOff();
-      return err;
-    }
-    online = true;
-    appfetchCatalogue();
-    lanAuthorization = "Basic " + base64::encode(String("unidex:") + password);
-  } else if (const char *err = startHotspot()) {
+  if (const char *err = startHotspot()) {
     return err;
   }
   setCpuFrequencyMhz(160);                          // enough to serve a page; the scan and join above ran at 240
   WiFi.setSleep(false);                             // answer at once, no power-save naps
-  panelAddress = lanMode ? WiFi.localIP() : WiFi.softAPIP();
-  if (lanMode && (panelAddress == IPAddress() || lanAuthorization.length() <= 6)) {
-    lanAuthorization = "";
-    netOff();
-    return "LAN panel unavailable";
-  }
-  if (lanMode) snprintf(joinCode, sizeof joinCode, "http://%s/", panelAddress.toString().c_str());
+  panelAddress = WiFi.softAPIP();
   http = WiFiServer(panelAddress, 80, 8);
   http.begin();
   if (!http) {
@@ -789,7 +796,7 @@ const char *phoneStart(PhoneTab startTab, PhoneAccess access) {
     WiFi.setAutoReconnect(true);
     return "Panel couldn't start";
   }
-  if (!lanMode) dns.start(53, "*", panelAddress);
+  dns.start(53, "*", panelAddress);
   powerHold();     // no light or deep sleep while the phone may be reading
   netClaim(true);  // the radio is the hotspot's: the background sends (Notes, Reminders) wait until it's off
   on = true, served = 0, firstAt = 0, shown = 0, stopAt = 0, changed = false, notesChanged = false, done = false, redrawFull = false, redrawSoon = false;
@@ -812,12 +819,12 @@ const char *phoneStart(PhoneTab startTab, PhoneAccess access) {
 
 void phoneStop() {
   if (!on) return;
-  if (!lanMode) dns.stop();
+  dns.stop();
   for (Connection &conn : connections)
     conn.client.stop(), conn.client = WiFiClient(), conn.head = "", conn.file.close(), conn.remaining = 0;
   http.end();
   appfetchCancel();
-  if (!lanMode) WiFi.softAPdisconnect(true);
+  WiFi.softAPdisconnect(true);
   netOff();
   lanAuthorization = "";
   WiFi.setAutoReconnect(true);
@@ -834,12 +841,7 @@ bool phoneOn() { return on; }
 
 Redraw phoneTick() {
   if (!on) return Redraw::None;
-  if (lanMode && (WiFi.status() != WL_CONNECTED || WiFi.localIP() != panelAddress)) {
-    phoneStop();
-    launcherToast("WiFi disconnected");
-    return Redraw::Partial;
-  }
-  if (!lanMode) dns.processNextRequest();
+  dns.processNextRequest();
   serveHttp();
   if (appfetchBusy()) {  // an app installing from the Apps tab: a file per tick (a second or two each)
     appfetchStep();
@@ -870,28 +872,23 @@ static void drawJoinLine(int16_t baseline) {
   drawCenteredLine((fitText(ssid, display.width() - 8 - textWidth(pw.c_str())) + pw).c_str(), baseline);
 }
 
-// The QR code the camera joins with, then the name and password to type.
-void phoneDraw(const char *title, const char *computer) {
-  shown = served;
-  drawHeader(lanMode ? "LAN panel" : title);
+static void drawJoinQr(const char *text, int scale, int y0) {
   QRCode qr;
   uint8_t modules[qrcode_getBufferSize(3)];
-  if (qrcode_initText(&qr, modules, 3, ECC_LOW, joinCode) == 0) {  // version 3: 29x29, 4 px each (3 with `computer`)
-    const int scale = computer ? 3 : 4, x0 = (display.width() - qr.size * scale) / 2, y0 = CONTENT_TOP + (computer ? 3 : 4);
+  if (qrcode_initText(&qr, modules, 3, ECC_LOW, text) == 0) {
+    const int x0 = (display.width() - qr.size * scale) / 2;
     for (uint8_t y = 0; y < qr.size; y++)
       for (uint8_t x = 0; x < qr.size; x++)
         if (qrcode_getModule(&qr, x, y)) display.fillRect(x0 + x * scale, y0 + y * scale, scale, scale, BLACK);
   }
+}
+
+// The QR code the camera joins with, then the name and password to type.
+void phoneDraw(const char *title, const char *computer) {
+  shown = served;
+  drawHeader(title);
+  drawJoinQr(joinCode, computer ? 3 : 4, CONTENT_TOP + (computer ? 3 : 4));
   char line[48];
-  if (lanMode) {
-    display.setFont(FONT_SMALL);
-    drawCenteredLine(joinCode, 162);
-    display.setFont(FONT_TINY);
-    snprintf(line, sizeof line, "unidex / %s", password);
-    drawCenteredLine(line, 179);
-    drawCenteredLine("Hold A to stop", 194);
-    return;
-  }
   if (computer) {  // everything above the hints
     display.setFont(FONT_SMALL);
     drawCenteredLine(shown ? "Phone connected" : "Scan with your phone", 128);
@@ -915,3 +912,68 @@ bool phoneDone() { return done; }
 const char *phoneSsid() { return ssid; }
 const char *phonePassword() { return password; }
 const char *phoneJoinCode() { return joinCode; }
+
+// The persistent listener shares the existing parser and access checks with the temporary portal.
+void phoneLanStop() {
+  if (!lanActive) return;
+  for (Connection &conn : connections)
+    conn.client.stop(), conn.client = WiFiClient(), conn.head = "", conn.file.close(), conn.remaining = 0;
+  http.end();
+  appfetchCancel();
+  lanActive = false;
+  lanUrl[0] = 0;
+  lanAuthorization = "";
+}
+
+void phoneLanPoll() {
+  if (on) return;  // hotspot owns the server and radio
+  if (lanDisconnectAt && (int32_t)(millis() - lanDisconnectAt) >= 0) {
+    lanDisconnectAt = 0;
+    phoneLanStop();
+    netOff();
+  }
+  if (linkOn() || WiFi.status() != WL_CONNECTED || (lanActive && WiFi.localIP() != panelAddress)) phoneLanStop();
+  if (linkOn()) return;
+  netBackgroundPoll();
+  if (WiFi.status() != WL_CONNECTED) return;
+  if (!lanActive) {
+    if (!lanPassword[0]) {
+      static const char alphabet[] = "abcdefghjkmnpqrstuvwxyz23456789";
+      for (size_t i = 0; i < sizeof lanPassword - 2; ++i) lanPassword[i] = alphabet[esp_random() % (sizeof alphabet - 1)];
+      lanPassword[sizeof lanPassword - 2] = 0;
+    }
+    panelAddress = WiFi.localIP();
+    if (panelAddress == IPAddress()) return;
+    lanAuthorization = "Basic " + base64::encode(String("unidex:") + lanPassword);
+    snprintf(lanUrl, sizeof lanUrl, "http://%s/", panelAddress.toString().c_str());
+    tab = PhoneTab::Settings;
+    online = true;
+    http = WiFiServer(panelAddress, 80, 8);
+    http.begin();
+    if (!http) { http.end(); lanUrl[0] = 0; return; }
+    lanCatalogueChecked = false;
+    lanActive = true;
+  }
+  serveHttp();
+  if (appfetchBusy()) {
+    appfetchStep();
+    if (!appfetchBusy() && appfetchStatus().ok) launcherToast("App installed");
+  }
+}
+bool phoneLanKeepAwake() { return !on && !linkOn() && (WiFi.status() == WL_CONNECTED || netConnecting()); }
+const char *phoneLanUrl() { return lanUrl; }
+
+void phoneLanDraw() {
+  drawHeader("LAN panel");
+  if (!lanActive) {
+    drawCenteredLine("Waiting for WiFi", 85);
+    drawCenteredLine("Hold B in Settings to set up", 108);
+    return;
+  }
+  drawJoinQr(lanUrl, 3, CONTENT_TOP + 4);
+  drawCenteredLine(lanUrl, 130);
+  drawCenteredLine("User: unidex", 145);
+  char line[32];
+  snprintf(line, sizeof line, "Password: %s", lanPassword);
+  drawCenteredLine(line, 160);
+}
