@@ -3,6 +3,7 @@
 #include <StreamString.h>
 #include <WiFi.h>
 #include <algorithm>
+#include <base64.h>
 #include <esp_mac.h>
 #include <esp_wifi.h>
 #include <qrcode.h>
@@ -40,6 +41,9 @@ static const uint32_t MAX_MS = 20 * 60000;  // however busy the phone keeps it, 
 static WiFiServer http(80, 8);
 static DNSServer dns;  // every name the phone looks up points here, so its internet check finds this page
 static bool on;
+static bool lanMode;
+static IPAddress panelAddress;
+static String lanAuthorization;
 static uint32_t lastUse, served, startedAt, firstAt;  // firstAt: the first request from a phone
 static uint32_t shown;     // requests answered when the screen was last drawn ("Phone connected" once there are some)
 static uint32_t stopAt;    // Done was pressed: stop at this time (after its answer has gone out)
@@ -61,6 +65,11 @@ static uint32_t joinedAt, addressAt;
 static char reqLog[96];  // the last requests and how long each took
 static char times[200];
 static const char *phoneTimes() {
+  if (lanMode) {
+    snprintf(times, sizeof times, "lan=%s pw=%s online=%d%s", WiFi.localIP().toString().c_str(), password,
+             WiFi.status() == WL_CONNECTED, reqLog);
+    return times;
+  }
   snprintf(times, sizeof times, "ssid=%s pw=%s ch=%d online=%d joined=%lu address=%lu first=%lu%s", ssid, password,
            (int)WiFi.channel(), online && WiFi.status() == WL_CONNECTED, joinedAt ? joinedAt - startedAt : 0,
            addressAt ? addressAt - startedAt : 0, firstAt ? firstAt - startedAt : 0, reqLog);
@@ -75,7 +84,7 @@ static const char *phoneTimes() {
 
 struct Request {
   String method, path, query, host, range;  // range: the Range header's value ("bytes=0-1"), if any
-  String origin, body;                      // origin: the Origin header (the page that sent it), if any
+  String origin, authorization, body;
   String arg(const char *name) const {  // a query value, %XX-decoded
     const String all = "&" + query, key = String("&") + name + "=";
     const int at = all.indexOf(key);
@@ -118,6 +127,7 @@ static String header(int code, const char *type, size_t len, const String &heade
                        : code == 206 ? "Partial Content"
                        : code == 302 ? "Found"
                        : code == 400 ? "Bad Request"
+                       : code == 401 ? "Unauthorized"
                        : code == 416 ? "Range Not Satisfiable"
                                      : "Not Found";
   return "HTTP/1.1 " + String(code) + " " + status + "\r\nContent-Type: " + type + "\r\nContent-Length: " + String(len) +
@@ -537,8 +547,13 @@ static void startAudio(Connection &conn, const Request &r) {
 static void handle(Connection &conn, const Request &r) {
   WiFiClient &c = conn.client;
   const uint32_t t0 = millis();
-  const String self = WiFi.softAPIP().toString();
+  const String self = panelAddress.toString();
   if (r.path == "/favicon.ico" || r.path.startsWith("/apple-touch-icon")) return reply(c, 204, "text/plain", "", 0);
+  if (lanMode) {
+    if (r.host != self) return reply(c, 400, "text/plain", "Open the address shown on Unidex.");
+    if (!lanAuthorization.length() || r.authorization != lanAuthorization)
+      return reply(c, 401, "text/plain", "Use the login code shown on Unidex.", "WWW-Authenticate: Basic realm=\"Unidex LAN\"\r\n");
+  }
   if (!firstAt) firstAt = t0;
   served++;
   if (r.host != self) {
@@ -622,6 +637,7 @@ static Request parseRequest(const String &head, int end) {
   const int colon = r.host.indexOf(':');
   if (colon >= 0) r.host = r.host.substring(0, colon);
   r.origin = headerValue(head, lower, "\norigin:");
+  if (lanMode) r.authorization = headerValue(head, lower, "\nauthorization:");
   r.body = head.substring(end + 4);
   return r;
 }
@@ -697,21 +713,11 @@ static void drawLooking() {
   drawEmpty("Looking for WiFi", "for the app store");
 }
 
-const char *phoneStart(PhoneTab startTab) {
-  tab = startTab;
-  if (on) return nullptr;
-  if (netClaimed()) return "Sending a note: try soon";  // over the normal WiFi
+static const char *startHotspot() {
   const String name = storageGetString("dev_name");  // what the person called it (Settings on the page)
   if (name.length() && !checkName(name.c_str())) strlcpy(ssid, name.c_str(), sizeof ssid);
   else strlcpy(ssid, defaultName().c_str(), sizeof ssid);
-  // No look-alike characters (l/1, O/0), so it can be typed from the screen if the camera can't scan.
-  static const char ALPHABET[] = "abcdefghjkmnpqrstuvwxyz23456789";
-  for (size_t i = 0; i < sizeof password - 2; i++) password[i] = ALPHABET[esp_random() % (sizeof ALPHABET - 1)];
-  password[sizeof password - 2] = 0;
   snprintf(joinCode, sizeof joinCode, "WIFI:T:WPA;S:%s;P:%s;;", ssid, password);
-  buildList();  // reads the card once, before the radio starts
-  netOff();
-  setCpuFrequencyMhz(240);  // full speed while the radio is on (as for normal WiFi): phones join faster
   if (tab == PhoneTab::Notes) {
     nearby = "[]";
     savedNearby = false;
@@ -736,11 +742,54 @@ const char *phoneStart(PhoneTab startTab) {
     WiFi.setAutoReconnect(true);
     return "WiFi didn't start: try again";
   }
+  esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20);  // a 20 MHz channel: phones join it more reliably
+  return nullptr;
+}
+
+const char *phoneStart(PhoneTab startTab, PhoneAccess access) {
+  tab = startTab;
+  if (on) return nullptr;
+  if (netClaimed()) return "Sending a note: try soon";
+  lanMode = access == PhoneAccess::Lan;
+  // No look-alike characters (l/1, O/0), so the code can be typed from the screen.
+  static const char ALPHABET[] = "abcdefghjkmnpqrstuvwxyz23456789";
+  for (size_t i = 0; i < sizeof password - 2; i++) password[i] = ALPHABET[esp_random() % (sizeof ALPHABET - 1)];
+  password[sizeof password - 2] = 0;
+  buildList();
+  netOff();
+  setCpuFrequencyMhz(240);
+  if (lanMode) {
+    nearby = "[]";
+    displayShow(drawLooking, false);
+    if (const char *err = netConnect()) {
+      netOff();
+      return err;
+    }
+    online = true;
+    appfetchCatalogue();
+    lanAuthorization = "Basic " + base64::encode(String("unidex:") + password);
+  } else if (const char *err = startHotspot()) {
+    return err;
+  }
   setCpuFrequencyMhz(160);                          // enough to serve a page; the scan and join above ran at 240
   WiFi.setSleep(false);                             // answer at once, no power-save naps
-  esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20);  // a 20 MHz channel: phones join it more reliably
+  panelAddress = lanMode ? WiFi.localIP() : WiFi.softAPIP();
+  if (lanMode && (panelAddress == IPAddress() || lanAuthorization.length() <= 6)) {
+    lanAuthorization = "";
+    netOff();
+    return "LAN panel unavailable";
+  }
+  if (lanMode) snprintf(joinCode, sizeof joinCode, "http://%s/", panelAddress.toString().c_str());
+  http = WiFiServer(panelAddress, 80, 8);
   http.begin();
-  dns.start(53, "*", WiFi.softAPIP());
+  if (!http) {
+    http.end();
+    lanAuthorization = "";
+    netOff();
+    WiFi.setAutoReconnect(true);
+    return "Panel couldn't start";
+  }
+  if (!lanMode) dns.start(53, "*", panelAddress);
   powerHold();     // no light or deep sleep while the phone may be reading
   netClaim(true);  // the radio is the hotspot's: the background sends (Notes, Reminders) wait until it's off
   on = true, served = 0, firstAt = 0, shown = 0, stopAt = 0, changed = false, notesChanged = false, done = false, redrawFull = false, redrawSoon = false;
@@ -763,13 +812,14 @@ const char *phoneStart(PhoneTab startTab) {
 
 void phoneStop() {
   if (!on) return;
-  dns.stop();
+  if (!lanMode) dns.stop();
   for (Connection &conn : connections)
     conn.client.stop(), conn.client = WiFiClient(), conn.head = "", conn.file.close(), conn.remaining = 0;
   http.end();
   appfetchCancel();
-  WiFi.softAPdisconnect(true);
-  netOff();  // the normal WiFi too, if the Apps tab had it
+  if (!lanMode) WiFi.softAPdisconnect(true);
+  netOff();
+  lanAuthorization = "";
   WiFi.setAutoReconnect(true);
   netClaim(false);
   online = false;
@@ -784,7 +834,12 @@ bool phoneOn() { return on; }
 
 Redraw phoneTick() {
   if (!on) return Redraw::None;
-  dns.processNextRequest();
+  if (lanMode && (WiFi.status() != WL_CONNECTED || WiFi.localIP() != panelAddress)) {
+    phoneStop();
+    launcherToast("WiFi disconnected");
+    return Redraw::Partial;
+  }
+  if (!lanMode) dns.processNextRequest();
   serveHttp();
   if (appfetchBusy()) {  // an app installing from the Apps tab: a file per tick (a second or two each)
     appfetchStep();
@@ -818,7 +873,7 @@ static void drawJoinLine(int16_t baseline) {
 // The QR code the camera joins with, then the name and password to type.
 void phoneDraw(const char *title, const char *computer) {
   shown = served;
-  drawHeader(title);
+  drawHeader(lanMode ? "LAN panel" : title);
   QRCode qr;
   uint8_t modules[qrcode_getBufferSize(3)];
   if (qrcode_initText(&qr, modules, 3, ECC_LOW, joinCode) == 0) {  // version 3: 29x29, 4 px each (3 with `computer`)
@@ -828,6 +883,15 @@ void phoneDraw(const char *title, const char *computer) {
         if (qrcode_getModule(&qr, x, y)) display.fillRect(x0 + x * scale, y0 + y * scale, scale, scale, BLACK);
   }
   char line[48];
+  if (lanMode) {
+    display.setFont(FONT_SMALL);
+    drawCenteredLine(joinCode, 162);
+    display.setFont(FONT_TINY);
+    snprintf(line, sizeof line, "unidex / %s", password);
+    drawCenteredLine(line, 179);
+    drawCenteredLine("Hold A to stop", 194);
+    return;
+  }
   if (computer) {  // everything above the hints
     display.setFont(FONT_SMALL);
     drawCenteredLine(shown ? "Phone connected" : "Scan with your phone", 128);

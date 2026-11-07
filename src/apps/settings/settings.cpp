@@ -7,14 +7,17 @@
 #include "../../core/audio.h"
 #include "../../core/ringtones.h"
 #include "../../core/battery.h"
+#include "../../core/card_reader.h"
 #include "../../core/clock.h"
 #include "../../core/devtools.h"
 #include "../../core/display.h"
 #include "../../core/launcher.h"
+#include "../../core/net.h"
 #include "../../core/power.h"
 #include "../../core/storage.h"
 #include "../../core/theme.h"
 #include "../notes/cloud.h"
+#include "../notes/job.h"
 #include "../notes/phone.h"
 #include "../pet/meet.h"
 #include "../timetable/callink.h"
@@ -30,7 +33,7 @@ static const int SLEEP_CHOICES[] = {10, 20, 30, 60};
 static const int ROW_H = 22, PAGE_ROWS = 6;  // six rows fit above the hints
 
 enum Screen : uint8_t { LIST, DATETIME, INFO, RESET, CONFIRM, CONFIRM_AGAIN, VOLUME, PHONE, CHECK, SYNC };
-enum Row : uint8_t { DATE, SYNC_ROW, SLEEP, SAVER, VOLUME_ROW, ALERTS, RINGTONE, LANGUAGE, INVERT, INFO_ROW, RESET_ROW, ROWS };
+enum Row : uint8_t { DATE, SYNC_ROW, SLEEP, SAVER, VOLUME_ROW, ALERTS, RINGTONE, LANGUAGE, INVERT, INFO_ROW, RESET_ROW, LAN, CARD_READER, ROWS };
 enum Reset : uint8_t { CALENDAR, PET_FRIENDS, EVERYTHING, FACTORY, RESETS };
 static const char *RESET_NAMES[] = {"Calendar", "Pet friends", "Everything", "Factory reset"};
 static const int RESET_ROW_H = 22;  // six rows fit above the hints
@@ -117,6 +120,8 @@ static void drawList() {
       case INVERT: drawRow(i, sel, "Invert", display.inverted ? "on" : "off"); break;
       case INFO_ROW: drawRow(i, sel, "Battery & info", ">"); break;
       case RESET_ROW: drawRow(i, sel, "Reset data", ">"); break;
+      case LAN: drawRow(i, sel, "LAN panel", ">"); break;
+      case CARD_READER: drawRow(i, sel, "USB card reader", ">"); break;
     }
   }
   drawHints("next", cursor == SLEEP || cursor == SAVER || cursor == INVERT || cursor == ALERTS || cursor == RINGTONE || cursor == LANGUAGE ? "change" : "open", "phone");
@@ -472,6 +477,14 @@ static Redraw onButton(Event e) {
         } else if (cursor == INVERT) {
           displaySetInverted(!display.inverted);
           return Redraw::Full;  // every pixel changes
+        } else if (cursor == LAN) {
+          if (const char *low = batteryTooLow()) launcherToast(low);
+          else if (const char *err = phoneStart(PhoneTab::Settings, PhoneAccess::Lan)) launcherToast(err);
+          else screen = PHONE;
+        } else if (cursor == CARD_READER) {
+          if (!cardReaderAvailable()) launcherToast("USB reader unavailable");
+          else if (jobBusy() || netClaimed()) launcherToast("Busy: try again");
+          else cardReaderRequest();
         } else {
           screen = cursor == INFO_ROW ? INFO : RESET;
           resetCursor = 0;

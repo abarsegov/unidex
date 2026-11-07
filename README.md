@@ -339,6 +339,18 @@ Press **Done** at the bottom (or hold A on the device) when you're finished. If 
 then joins your WiFi, checks each service and lists how it went. Keys never come back to the page: a saved one
 shows as its last 4 characters.
 
+#### Open the panel on your local network
+
+Choose **Settings → LAN panel** to join a saved WiFi network. Keep your phone on the same network and open the
+IP address shown on the display, or scan its QR code. Sign in as `unidex` with the code next to the address.
+Each session gets a new code. Press **Done** or hold **BOOT** to close the panel. The same idle and session
+timeouts apply as for phone setup.
+
+#### Use the microSD card as a USB drive
+
+Connect the USB data cable and choose **Settings → USB card reader**. Unidex restarts and Windows can open the
+card as a removable drive. Use **Eject** on the drive in File Explorer, then press **PWR** on Unidex to return.
+
 ## Apps and plugins: make your own
 
 unidex is built to be taken apart. Beyond the apps above, it runs **apps, games and plugins written by anyone**, and

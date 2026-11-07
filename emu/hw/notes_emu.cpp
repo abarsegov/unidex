@@ -23,7 +23,7 @@ const char *cloudAgent(const char *, const String &, String &) { return NO; }
 const char *cloudPush(const String &, const String &, String &) { return NO; }
 const char *cloudTest(const char *, String &) { return NO; }
 String noteMarkdown(const NoteText &, const String &, const String &) { return String(); }
-const char *phoneStart(PhoneTab) { return "Not in the demo"; }
+const char *phoneStart(PhoneTab, PhoneAccess) { return "Not in the demo"; }
 void phoneStop() {}
 bool phoneOn() { return false; }
 Redraw phoneTick() { return Redraw::None; }

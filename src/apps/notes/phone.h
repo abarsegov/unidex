@@ -9,8 +9,9 @@
 // (for the Apps tab, which installs from the store over it) and puts the hotspot on its channel. It stops itself
 // after a few minutes with nobody using it, or when the page's Done is pressed.
 enum class PhoneTab : uint8_t { Notes, Settings, Setup };  // the page it opens on
+enum class PhoneAccess : uint8_t { Hotspot, Lan };
 
-const char *phoneStart(PhoneTab tab);  // nullptr, or why not ("Sending a note: try soon")
+const char *phoneStart(PhoneTab tab, PhoneAccess access = PhoneAccess::Hotspot);
 void phoneStop();
 bool phoneOn();
 Redraw phoneTick();          // call often while on: answers the phone; stops after the idle time or Done
