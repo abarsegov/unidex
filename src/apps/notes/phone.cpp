@@ -45,6 +45,7 @@ static DNSServer dns;  // every name the phone looks up points here, so its inte
 static bool on;
 static bool lanActive;
 static bool lanCatalogueChecked;
+static uint32_t firstLanReadyMs;
 static char lanPassword[12], lanUrl[40];
 static uint32_t lanDisconnectAt;
 static IPAddress panelAddress;
@@ -579,6 +580,7 @@ static void handle(Connection &conn, const Request &r) {
     return logRequest("probe", t0);  // (not "use": a phone left joined keeps asking, and would keep the hotspot up)
   }
   lastUse = t0;
+  if (lanActive && r.path != "/installed.json") powerActivity();  // skip the browser's app status polling
   if (r.method == "POST") {
     // Saves come only from the page itself: another page (one open from before joining) can't send them here.
     if (r.origin.length() && r.origin != "http://" + self) reply(c, 400, "application/json", answer("Not from this page."));
@@ -697,6 +699,7 @@ static void serveHttp() {
       const size_t sent = n && conn.client.connected() ? conn.client.write(piece, n) : 0;
       conn.remaining = sent == n && n ? conn.remaining - n : 0;
       lastUse = millis();  // still in use: no idle stop mid-playback
+      if (lanActive && sent) powerActivity();
       if (conn.remaining) continue;
       conn.file.close();
       conn.client.stop();
@@ -934,6 +937,11 @@ void phoneLanPoll() {
   }
   if (linkOn() || WiFi.status() != WL_CONNECTED || (lanActive && WiFi.localIP() != panelAddress)) phoneLanStop();
   if (linkOn()) return;
+  if (powerLanIdleExpired() && !phoneLanBusy()) {
+    phoneLanStop();
+    if (!netClaimed() && phoneLanKeepAwake()) netOff();
+    return;
+  }
   netBackgroundPoll();
   if (WiFi.status() != WL_CONNECTED) return;
   if (!lanActive) {
@@ -953,18 +961,33 @@ void phoneLanPoll() {
     if (!http) { http.end(); lanUrl[0] = 0; return; }
     lanCatalogueChecked = false;
     lanActive = true;
+    if (!firstLanReadyMs) firstLanReadyMs = millis();
   }
   serveHttp();
   if (appfetchBusy()) {
     appfetchStep();
+    powerActivity();
     if (!appfetchBusy() && appfetchStatus().ok) launcherToast("App installed");
   }
 }
 bool phoneLanKeepAwake() { return !on && !linkOn() && (WiFi.status() == WL_CONNECTED || netConnecting()); }
+
+bool phoneLanBusy() {
+  if (!lanActive) return false;
+  if (appfetchBusy()) return true;
+  for (const Connection &conn : connections)
+    if (conn.remaining) return true;
+  return false;
+}
+
 const char *phoneLanUrl() { return lanUrl; }
 
 void phoneLanDraw() {
-  drawHeader("LAN panel");
+  char timing[20] = "";
+  if (lanActive && powerWokeFromSleep())
+    snprintf(timing, sizeof timing, "%lu.%lu s", (unsigned long)(firstLanReadyMs / 1000),
+             (unsigned long)(firstLanReadyMs / 100 % 10));
+  drawHeader("LAN panel", timing);
   if (!lanActive) {
     drawCenteredLine("Waiting for WiFi", 85);
     drawCenteredLine("Hold B in Settings to set up", 108);

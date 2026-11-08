@@ -7,6 +7,7 @@ bool usbModeBegin() { return false; }
 void usbModePoll() {}
 bool usbModeTakeReturnToSettings() { return false; }
 bool usbHostConnected() { return false; }
+bool usbHostActive() { return false; }
 const char *usbWakePc() { return "USB wake unavailable"; }
 const char *usbSleepPc() { return "USB sleep unavailable"; }
 #else
@@ -382,6 +383,10 @@ static void beginNormalUsb() {
 
 bool usbHostConnected() {
   return normalUsb && usbStarted && tud_mounted() && wakeHasSession();
+}
+
+bool usbHostActive() {
+  return usbHostConnected() && !(USB0.dsts & USB_SUSPSTS_M);
 }
 
 const char *usbWakePc() {

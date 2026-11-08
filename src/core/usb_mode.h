@@ -9,6 +9,7 @@ void usbModePoll();
 // Consume the one-shot return destination after the normal launcher starts.
 bool usbModeTakeReturnToSettings();
 bool usbHostConnected();
+bool usbHostActive();  // USB is configured and the host is running the bus
 // Main-loop calls. Return a message on failure, or nullptr after sending the signal.
 const char *usbWakePc();
 const char *usbSleepPc();

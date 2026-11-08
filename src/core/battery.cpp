@@ -25,6 +25,24 @@ int batteryMillivolts() {
   return sum / 32 * 2 * CALIBRATION;
 }
 
+BatteryAdcSample batteryAdcSample() {
+  const int mv = batteryMillivolts();
+  constexpr int samples = 128;
+  int sum = 0, lo = 4095, hi = 0;
+  for (int i = 0; i < samples; ++i) {
+    const int raw = analogRead(PIN_BATTERY);
+    sum += raw;
+    lo = min(lo, raw);
+    hi = max(hi, raw);
+  }
+  return {mv, sum / samples, hi - lo};
+}
+
+bool batteryNearChargeVoltage(int mv, bool wasNear) {
+  // ETA6098 regulates around 4.20 V. VBAT alone is only a hint of wall power.
+  return mv >= (wasNear ? 4180 : 4190) && mv <= 4240;
+}
+
 // Kept through deep sleep and through a restart (a crash, the watchdog, an update), so the % carries on instead of
 // starting again from the voltage; only a power cut loses it. Checked, as this memory isn't cleared at power-up.
 RTC_NOINIT_ATTR static battery::State state;
@@ -110,9 +128,9 @@ bool batteryEmpty() { return battery::level(batteryMillivolts(), batteryCharging
 // a full battery on USB shows it too. A dumb charger sends no USB data, so the voltage is the fallback.
 bool batteryCharging() {
 #if UNIDEX_DEV
-  if (fakeMv) return fakeMv >= 4190;  // a pretend reading: as if on battery
+  if (fakeMv) return batteryNearChargeVoltage(fakeMv);
 #endif
-  return usbHostConnected() || batteryMillivolts() >= 4190;  // the charger holds 4.20 V while topping up
+  return usbHostConnected() || batteryNearChargeVoltage(batteryMillivolts());
 }
 
 bool batteryToppingUp() {

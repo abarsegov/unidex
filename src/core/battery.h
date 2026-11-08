@@ -1,8 +1,16 @@
 #pragma once
 
 int batteryMillivolts();  // battery voltage in mV (GPIO4 through the board's divider by 2)
+struct BatteryAdcSample {
+  int millivolts, rawMean, rawSpan;
+};
+struct BatteryProbeResult {
+  BatteryAdcSample before, after;
+};
+BatteryAdcSample batteryAdcSample();  // calibrated VBAT and a burst of raw GPIO4 readings
+bool batteryNearChargeVoltage(int mv, bool wasNear = false);
 int batteryPercent();     // 0-100 estimated from voltage, or -1 if no battery is detected
-bool batteryCharging();    // USB power seems present (host attached, or voltage above a full battery)
+bool batteryCharging();    // USB host detected or VBAT near the charger regulation voltage
 // nullptr when there's charge for heavy work (WiFi, the radio, recording), else the reason to show ("Battery too
 // low"). Always fine on USB or with no battery fitted.
 const char *batteryTooLow();

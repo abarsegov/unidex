@@ -39,6 +39,7 @@ const char *phoneJoinCode() { return ""; }
 void phoneLanPoll() {}
 void phoneLanStop() {}
 bool phoneLanKeepAwake() { return false; }
+bool phoneLanBusy() { return false; }
 const char *phoneLanUrl() { return ""; }
 void phoneLanDraw() {}
 bool appfetchBusy() { return false; }

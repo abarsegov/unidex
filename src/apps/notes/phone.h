@@ -29,5 +29,6 @@ const char *phoneJoinCode(); // what the QR code holds: WIFI:T:WPA;S:<ssid>;P:<p
 void phoneLanPoll();
 void phoneLanStop();  // close clients and SD files before switching modes
 bool phoneLanKeepAwake();
+bool phoneLanBusy();  // a file transfer or app install is in progress
 const char *phoneLanUrl();
 void phoneLanDraw();  // address, QR code, and login details

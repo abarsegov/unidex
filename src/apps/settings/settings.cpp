@@ -33,7 +33,7 @@ static const char *VERSION = UNIDEX_VERSION;  // from git, tools/version.py
 static const int SLEEP_CHOICES[] = {10, 20, 30, 60};
 static const int ROW_H = 22, PAGE_ROWS = 6;  // six rows fit above the hints
 
-enum Screen : uint8_t { LIST, DATETIME, INFO, RESET, CONFIRM, CONFIRM_AGAIN, VOLUME, PHONE, CHECK, SYNC, LAN_INFO };
+enum Screen : uint8_t { LIST, DATETIME, INFO, RESET, CONFIRM, CONFIRM_AGAIN, VOLUME, PHONE, CHECK, SYNC, LAN_INFO, BATTERY_TEST };
 enum Row : uint8_t { DATE, SYNC_ROW, SLEEP, SAVER, VOLUME_ROW, ALERTS, RINGTONE, LANGUAGE, INVERT, INFO_ROW, RESET_ROW, LAN, CARD_READER, USB_WAKE, ROWS };
 enum Reset : uint8_t { CALENDAR, PET_FRIENDS, EVERYTHING, FACTORY, RESETS };
 static const char *RESET_NAMES[] = {"Calendar", "Pet friends", "Everything", "Factory reset"};
@@ -43,6 +43,7 @@ enum Field : uint8_t { YEAR, MONTH, DAY, HOUR, MINUTE, SAVE, FIELDS };
 RTC_DATA_ATTR static uint8_t screen, cursor, resetCursor, field;
 RTC_DATA_ATTR static int16_t value[MINUTE + 1];  // the date being edited: y, m, d, h, min
 static String shownLanUrl;
+static bool batteryTestShown;
 
 static int daysIn(int year, int month) {
   static const int DAYS[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
@@ -102,7 +103,7 @@ static void drawList() {
       case DATE: drawRow(i, sel, "Date & time", time); break;
       case SYNC_ROW: drawRow(i, sel, "Sync", synced); break;
       case SLEEP: drawRow(i, sel, "Sleep after", sleep); break;
-      case SAVER: drawRow(i, sel, "Battery saver", powerSaver() ? "on" : "off"); break;
+      case SAVER: drawRow(i, sel, "Battery saver", powerSaverSetting() ? "on" : powerSaver() ? "auto" : "off"); break;
       case VOLUME_ROW: {
         drawRow(i, sel, "Volume", "");
         // a small bar, filled as far as the volume
@@ -313,7 +314,8 @@ static void drawInfo() {
     snprintf(storage, sizeof storage, "no card");
   lastSync(sync, sizeof sync);
   if (!*sync) snprintf(sync, sizeof sync, "not yet");
-  drawRow(0, false, pct >= 0 && batteryCharging() ? "On USB" : "Battery", battery);
+  const char *source = usbHostConnected() ? "USB host" : batteryCharging() ? "Charge likely" : "Battery";
+  drawRow(0, false, source, battery);
   // A build between releases, "v1.4-3-g13bf907": shown as "v1.4-3", which fits. A test build's "-dirty" (uncommitted
   // changes) is left out here to fit too; USB's V command reports it.
   String version = VERSION;
@@ -323,7 +325,33 @@ static void drawInfo() {
   drawRow(2, false, "Storage", storage);
   drawRow(3, false, "Calendar sync", sync);
   drawRow(4, false, "Device", deviceId());
-  drawHints("", "refresh", "");
+  drawHints("", "refresh", "battery test");
+}
+
+static void drawBatteryTest() {
+  drawHeader("Battery test");
+  display.setFont(FONT_SMALL);
+  batteryTestShown = !powerBatteryProbeRunning();
+  const BatteryProbeResult *result = powerBatteryProbeResult();
+  if (result) {
+    char value[24];
+    snprintf(value, sizeof value, "%d mV", result->before.millivolts);
+    drawRow(0, false, "Start", value);
+    snprintf(value, sizeof value, "%d mV", result->after.millivolts);
+    drawRow(1, false, "After 60 s", value);
+    snprintf(value, sizeof value, "%+d mV", result->after.millivolts - result->before.millivolts);
+    drawRow(2, false, "Change", value);
+    snprintf(value, sizeof value, "%d / %d", result->before.rawMean, result->after.rawMean);
+    drawRow(3, false, "ADC mean", value);
+    snprintf(value, sizeof value, "%d / %d", result->before.rawSpan, result->after.rawSpan);
+    drawRow(4, false, "ADC span", value);
+  } else if (batteryTestShown) {
+    drawCenteredLine("Test interrupted", 93);
+  } else {
+    drawCenteredLine("Keep the power source", 77);
+    drawCenteredLine("as it is for one minute", 99);
+  }
+  drawHints("back", "", "");
 }
 
 static void drawResetRows() {
@@ -461,8 +489,8 @@ static Redraw onButton(Event e) {
             if (SLEEP_CHOICES[i] == now) next = SLEEP_CHOICES[i + 1];
           powerSetSleepSeconds(next);
         } else if (cursor == SAVER) {
-          powerSetSaver(!powerSaver());
-          if (powerSaver()) launcherToast("Sleeps in 5 s, calmer");
+          powerSetSaver(!powerSaverSetting());
+          if (powerSaverSetting()) launcherToast("Saver enabled");
         } else if (cursor == SYNC_ROW) {
           screen = SYNC;
           hasSynced = false;
@@ -527,7 +555,15 @@ static Redraw onButton(Event e) {
       else return Redraw::None;
       return Redraw::Partial;
     case INFO:
-      return e == Event::BShort ? Redraw::Partial : Redraw::None;  // refresh the readings
+      if (e == Event::BShort) return Redraw::Partial;
+      if (e != Event::BLong) return Redraw::None;
+      if (const char *err = powerStartBatteryProbe()) launcherToast(err);
+      else screen = BATTERY_TEST;
+      return Redraw::Partial;
+    case BATTERY_TEST:
+      if (e != Event::AShort) return Redraw::None;
+      screen = INFO;
+      return Redraw::Partial;
     case SYNC:
       if (e != Event::BShort) return Redraw::None;
       syncing = true;
@@ -573,6 +609,7 @@ static Redraw onBack() {
     case DATETIME: launcherToast("Not saved"); screen = LIST; break;
     case CONFIRM:
     case CONFIRM_AGAIN: screen = RESET; break;
+    case BATTERY_TEST: screen = INFO; break;
     case PHONE:
       phoneStop();
       if (phoneChanged()) planChecks(), screen = CHECK;
@@ -600,6 +637,7 @@ static void draw() {
     case CHECK: drawCheck(); break;
     case DATETIME: drawDateTime(); break;
     case INFO: drawInfo(); break;
+    case BATTERY_TEST: drawBatteryTest(); break;
     case SYNC: drawSync(); break;
     case VOLUME: drawVolume(); break;
     case RESET: drawReset(); break;
@@ -610,6 +648,7 @@ static void draw() {
 }
 
 static Redraw tick() {
+  if (screen == BATTERY_TEST && !batteryTestShown && !powerBatteryProbeRunning()) return Redraw::Partial;
   if (screen == LAN_INFO) return shownLanUrl == phoneLanUrl() ? Redraw::None : Redraw::Partial;
   if (screen == PHONE) {
     const Redraw r = phoneTick();

@@ -8,10 +8,16 @@ void powerActivity();      // call on every input event to restart the idle time
 void powerSleepIfIdle();   // call from loop(); never returns if it sleeps
 void powerSetSleepSeconds(int s);  // saved in NVS
 int powerSleepSeconds();
-// Battery saver (Settings, saved in NVS): the device sleeps after 5 s at most, and what only moves the screen (blinks,
-// a Pet's reaction frames, a stopwatch's seconds) and the radio sessions are cut down. Each place asks powerSaver().
+// The effective profile can also be automatic when external power is uncertain.
 bool powerSaver();
+bool powerSaverSetting();  // manual switch, saved in NVS
 void powerSetSaver(bool on);
+bool powerLanIdleExpired();
+// A one-shot test with two early-boot battery samples separated by a minute of deep sleep.
+const char *powerStartBatteryProbe();  // nullptr when accepted, otherwise a message for the screen
+bool powerBatteryProbeRunning();
+struct BatteryProbeResult;
+const BatteryProbeResult *powerBatteryProbeResult();
 void powerHold();     // stay awake (no light or deep sleep) until the matching powerRelease(): background work
 void powerRelease();
 #if UNIDEX_DEV

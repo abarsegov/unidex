@@ -12,7 +12,12 @@ void powerSetSleepSeconds(int s) { sleepSecs = s; storagePutInt("sleep_s", s); }
 int powerSleepSeconds() { return sleepSecs; }
 // Battery saver: kept (Settings shows it and the apps ask), though the browser never sleeps anyway.
 bool powerSaver() { return saver; }
+bool powerSaverSetting() { return saver; }
+bool powerLanIdleExpired() { return false; }
 void powerSetSaver(bool on) { saver = on; storagePutInt("saver", on); }
+const char *powerStartBatteryProbe() { return "Battery test needs the board"; }
+bool powerBatteryProbeRunning() { return false; }
+const BatteryProbeResult *powerBatteryProbeResult() { return nullptr; }
 void powerHold() {}
 void powerRelease() {}
 #if UNIDEX_DEV

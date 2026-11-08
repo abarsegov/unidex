@@ -294,10 +294,14 @@ a store game to offload or delete it.
 - **Date & time:** set the clock by hand (the website, the Mac sync and WiFi can also set it).
 - **Sync:** **B** sets the clock from the internet and, if you've saved a calendar link, fetches this week's events
   for the Timetable. The row shows when it last synced.
-- **Sleep:** stay awake for 10, 20, 30 or 60 seconds after the last press.
-- **Battery saver:** **B** turns it on or off. On, it sleeps after 5 seconds at most, the Pet doesn't blink, the Clock
-  counts every 10 seconds (each second for a timer's last 10), and the phone portal stops sooner. Use it when you want
-  the battery to last.
+- **Sleep after** sets the usual idle timeout to 10, 20, 30 or 60 seconds.
+- **Battery saver** can turn on automatically when the board has neither a USB host nor a reading near the
+  charger's 4.20 V level. It uses a five-second idle timeout when offline and closes the LAN panel after five
+  idle minutes. The Pet stops blinking, the Clock refreshes less often, and the temporary phone portal stops
+  sooner. Leave the manual switch off for USB wake from a sleeping computer.
+- **Battery & info** offers a one-shot battery test when you hold **B**. It samples calibrated VBAT and the raw
+  GPIO4 readings before and after one minute of deep sleep. Run it once on battery and again on a wall charger
+  to compare the voltage change and the span of the raw readings.
 - **Volume:** the speaker, for playing notes and the reminder chime. **B** is louder, **hold B** quieter, with a
   chime at each step; 0 turns it off.
 - **Alert sound:** off, and a reminder falling due still shows on screen but doesn't chime (nor do apps). The
@@ -343,8 +347,8 @@ shows as its last 4 characters.
 
 Unidex starts the panel automatically on WiFi. **Settings → LAN panel** shows the address, QR code, and login.
 From a phone or computer on the same network, open the address and sign in as `unidex` with the code on the
-display. The code lasts until the board restarts. The temporary setup hotspot still opens by holding **PWR**
-in Settings.
+display. After deep sleep the header shows the time from firmware startup to the first ready LAN listener.
+The code lasts until the board restarts. Hold **PWR** in Settings to open the temporary setup hotspot.
 
 #### Use the microSD card as a USB drive
 
