@@ -348,7 +348,8 @@ shows as its last 4 characters.
 Unidex starts the panel automatically on WiFi. **Settings → LAN panel** shows the address, QR code, and login.
 From a phone or computer on the same network, open the address and sign in as `unidex` with the code on the
 display. After deep sleep the header shows the time from firmware startup to the first ready LAN listener.
-The code lasts until the board restarts. Hold **PWR** in Settings to open the temporary setup hotspot.
+The code is saved in the device settings and reused after restarts and firmware updates that keep those settings.
+Hold **PWR** in Settings to open the temporary setup hotspot.
 
 #### Use the microSD card as a USB drive
 

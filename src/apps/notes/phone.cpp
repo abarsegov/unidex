@@ -46,7 +46,7 @@ static bool on;
 static bool lanActive;
 static bool lanCatalogueChecked;
 static uint32_t firstLanReadyMs;
-static char lanPassword[12], lanUrl[40];
+static char lanPassword[11], lanUrl[40];
 static uint32_t lanDisconnectAt;
 static IPAddress panelAddress;
 static String lanAuthorization;
@@ -945,13 +945,28 @@ void phoneLanPoll() {
   netBackgroundPoll();
   if (WiFi.status() != WL_CONNECTED) return;
   if (!lanActive) {
-    if (!lanPassword[0]) {
-      static const char alphabet[] = "abcdefghjkmnpqrstuvwxyz23456789";
-      for (size_t i = 0; i < sizeof lanPassword - 2; ++i) lanPassword[i] = alphabet[esp_random() % (sizeof alphabet - 1)];
-      lanPassword[sizeof lanPassword - 2] = 0;
-    }
     panelAddress = WiFi.localIP();
     if (panelAddress == IPAddress()) return;
+    if (!lanPassword[0]) {
+      static bool tried;
+      if (tried) return;
+      tried = true;
+      static const char key[] = "lan_password";
+      const String saved = storageGetString(key);
+      if (saved.length() == sizeof lanPassword - 1) {
+        strlcpy(lanPassword, saved.c_str(), sizeof lanPassword);
+      } else {
+        static const char alphabet[] = "abcdefghjkmnpqrstuvwxyz23456789";
+        for (size_t i = 0; i < sizeof lanPassword - 1; ++i) lanPassword[i] = alphabet[esp_random() % (sizeof alphabet - 1)];
+        lanPassword[sizeof lanPassword - 1] = '\0';
+        storagePutString(key, lanPassword);
+        if (storageGetString(key) != lanPassword) {
+          lanPassword[0] = '\0';
+          launcherToast("Couldn't save LAN code");
+          return;
+        }
+      }
+    }
     lanAuthorization = "Basic " + base64::encode(String("unidex:") + lanPassword);
     snprintf(lanUrl, sizeof lanUrl, "http://%s/", panelAddress.toString().c_str());
     tab = PhoneTab::Settings;
