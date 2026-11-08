@@ -295,8 +295,8 @@ a store game to offload or delete it.
 - **Sync:** **B** sets the clock from the internet and, if you've saved a calendar link, fetches this week's events
   for the Timetable. The row shows when it last synced.
 - **Sleep after** sets the usual idle timeout to 10, 20, 30 or 60 seconds.
-- **Battery saver** can turn on automatically when the board has neither a USB host nor a reading near the
-  charger's 4.20 V level. It uses a five-second idle timeout when offline and closes the LAN panel after five
+- **Battery saver** turns on automatically without a USB host at 4.17 V or below. Higher readings are treated
+  as wall power for the idle policy. It uses a five-second idle timeout when offline and closes the LAN panel after five
   idle minutes. The Pet stops blinking, the Clock refreshes less often, and the temporary phone portal stops
   sooner. Leave the manual switch off for USB wake from a sleeping computer.
 - **Battery & info** offers a one-shot battery test when you hold **B**. It samples calibrated VBAT and the raw

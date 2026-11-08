@@ -20,7 +20,7 @@ static constexpr uint32_t LAN_IDLE_MS = 5 * 60 * 1000;
 static uint32_t idleTimeoutMs() { return (powerSaver() ? 5 : sleepS) * 1000; }
 
 static void sampleWallPower() {
-  likelyWallPower = batteryNearChargeVoltage(batteryMillivolts(), likelyWallPower);
+  likelyWallPower = batteryAssumesWallPower(batteryMillivolts());
   powerSampleAt = millis();
 }
 

@@ -38,9 +38,11 @@ BatteryAdcSample batteryAdcSample() {
   return {mv, sum / samples, hi - lo};
 }
 
-bool batteryNearChargeVoltage(int mv, bool wasNear) {
-  // ETA6098 regulates around 4.20 V. VBAT alone is only a hint of wall power.
-  return mv >= (wasNear ? 4180 : 4190) && mv <= 4240;
+static bool batteryUsbHostConnected() {
+#if UNIDEX_DEV
+  if (fakeMv) return false;
+#endif
+  return usbHostConnected();
 }
 
 // Kept through deep sleep and through a restart (a crash, the watchdog, an update), so the % carries on instead of
@@ -107,7 +109,8 @@ void batteryPrintCalls() {
 
 int batteryPercent() {
   const int mv = batteryMillivolts();
-  const bool charging = batteryCharging();
+  // Apply the charging offset only with a USB host or a reading near the charger regulation voltage.
+  const bool charging = batteryUsbHostConnected() || (mv >= 4190 && mv <= 4240);
   restore();
   const int pct = battery::update(state, mv, charging, millis());
   keep();
@@ -124,13 +127,8 @@ const char *batteryTooLow() {
 
 bool batteryEmpty() { return battery::level(batteryMillivolts(), batteryCharging()) == battery::Level::EMPTY; }
 
-// No charger-status pin is read, so this means "USB power present", not proof the battery is taking charge:
-// a full battery on USB shows it too. A dumb charger sends no USB data, so the voltage is the fallback.
 bool batteryCharging() {
-#if UNIDEX_DEV
-  if (fakeMv) return batteryNearChargeVoltage(fakeMv);
-#endif
-  return usbHostConnected() || batteryNearChargeVoltage(batteryMillivolts());
+  return batteryUsbHostConnected() || batteryAssumesWallPower(batteryMillivolts());
 }
 
 bool batteryToppingUp() {
