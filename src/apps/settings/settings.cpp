@@ -314,7 +314,7 @@ static void drawInfo() {
     snprintf(storage, sizeof storage, "no card");
   lastSync(sync, sizeof sync);
   if (!*sync) snprintf(sync, sizeof sync, "not yet");
-  const char *source = usbHostConnected() ? "USB host" : batteryCharging() ? "Charge likely" : "Battery";
+  const char *source = !batteryCharging() ? "Battery" : usbHostTrafficRecent() ? "USB host" : "Charge likely";
   drawRow(0, false, source, battery);
   // A build between releases, "v1.4-3-g13bf907": shown as "v1.4-3", which fits. A test build's "-dirty" (uncommitted
   // changes) is left out here to fit too; USB's V command reports it.

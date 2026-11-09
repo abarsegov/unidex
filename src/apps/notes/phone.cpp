@@ -20,12 +20,14 @@
 #include "../scripts/scripts.h"
 #include "../../core/audio.h"
 #include "../../core/battery.h"
+#include "../../core/battery_log.h"
 #include "../../core/clock.h"
 #include "../../core/credentials.h"
 #include "../../core/wifi_logic.h"
 #include "../../core/storage.h"
 #include "../../core/devtools.h"
 #include "../../core/display.h"
+#include "../../core/firmware_update.h"
 #include "../../core/launcher.h"
 #include "../../core/net.h"
 #include "../../core/power.h"
@@ -116,6 +118,9 @@ static const int CONNECTIONS = 6;
 static const uint32_t REQUEST_WAIT_MS = 4000;  // an empty connection is dropped after this
 static const size_t HEAD_MAX = 4096, BODY_MAX = 10240;  // a badge is ~7 KB as a form, an eduroam certificate ~4 KB
 static Connection connections[CONNECTIONS];
+static Connection *firmwareClient;
+static uint32_t firmwareLastByteAt, firmwareRestartAt;
+static const uint32_t FIRMWARE_IDLE_MS = 15000, FIRMWARE_MAX_MS = 3 * 60000;
 
 // Writes all of it, or gives up on a phone that stopped taking it (it left the hotspot, say for its usual WiFi): the
 // WiFi library waits ~10 s on a write that can't go, so a page sent in several writes would otherwise hold the loop
@@ -134,6 +139,9 @@ static String header(int code, const char *type, size_t len, const String &heade
                        : code == 302 ? "Found"
                        : code == 400 ? "Bad Request"
                        : code == 401 ? "Unauthorized"
+                       : code == 408 ? "Request Timeout"
+                       : code == 409 ? "Conflict"
+                       : code == 413 ? "Payload Too Large"
                        : code == 416 ? "Range Not Satisfiable"
                                      : "Not Found";
   return "HTTP/1.1 " + String(code) + " " + status + "\r\nContent-Type: " + type + "\r\nContent-Length: " + String(len) +
@@ -560,16 +568,32 @@ static void startAudio(Connection &conn, const Request &r) {
   conn.remaining = last - first + 1;
 }
 
+static bool authorizeLan(WiFiClient &c, const Request &r, const String &self, bool loadRead = false) {
+  if (r.host != self) {
+    reply(c, 400, "text/plain", "Open the address shown on Unidex.");
+    return false;
+  }
+  if ((loadRead && batteryLoadAuthorized(r.authorization.c_str())) ||
+      (lanAuthorization.length() && r.authorization == lanAuthorization)) return true;
+  reply(c, 401, "text/plain", "Use the login code shown on Unidex.", "WWW-Authenticate: Basic realm=\"Unidex LAN\"\r\n");
+  return false;
+}
+
 static void handle(Connection &conn, const Request &r) {
   WiFiClient &c = conn.client;
   const uint32_t t0 = millis();
   const String self = panelAddress.toString();
+  const bool loadRead = lanActive && r.method == "GET" &&
+                        (r.path == "/battery-load.json" || r.path == "/battery-load.csv");
   if (r.path == "/favicon.ico" || r.path.startsWith("/apple-touch-icon")) return reply(c, 204, "text/plain", "", 0);
-  if (lanActive) {
-    if (r.host != self) return reply(c, 400, "text/plain", "Open the address shown on Unidex.");
-    if (!lanAuthorization.length() || r.authorization != lanAuthorization)
-      return reply(c, 401, "text/plain", "Use the login code shown on Unidex.", "WWW-Authenticate: Basic realm=\"Unidex LAN\"\r\n");
+  if (lanActive && !authorizeLan(c, r, self, loadRead)) return;
+  if (lanActive && r.method == "GET" && r.path == "/firmware-status") {
+    const FirmwareUpdateInfo info = firmwareUpdateInfo();
+    return reply(c, 200, "application/json", "{\"version\":\"" + str(json(UNIDEX_VERSION)) + "\",\"slot\":" +
+                 String(info.activeSlot) + ",\"target\":" + String(info.targetSlot) + ",\"maxBytes\":" +
+                 String(info.maxBytes) + "}");
   }
+  if (firmwareClient || firmwareRestartAt) return reply(c, 409, "application/json", answer("Firmware update in progress."));
   if (!firstAt) firstAt = t0;
   served++;
   if (r.host != self) {
@@ -581,7 +605,20 @@ static void handle(Connection &conn, const Request &r) {
   }
   lastUse = t0;
   if (lanActive && r.path != "/installed.json") powerActivity();  // skip the browser's app status polling
+  if (loadRead) {
+    if (r.path == "/battery-load.json") return reply(c, 200, "application/json", batteryLoadStatus(), "Cache-Control: no-store\r\n");
+    conn.file = batteryLoadOpenLog();
+    if (!conn.file) return reply(c, 404, "text/plain", "No saved load test.");
+    conn.remaining = conn.file.size();
+    const String head = header(200, "text/csv", conn.remaining, "Cache-Control: no-store\r\n");
+    if (!send(c, head.c_str(), head.length())) {
+      conn.file.close();
+      conn.remaining = 0;
+    }
+    return;
+  }
   if (r.method == "POST") {
+    if (batteryLoadActive()) return reply(c, 400, "application/json", answer("Battery load test is active."));
     // Saves come only from the page itself: another page (one open from before joining) can't send them here.
     if (r.origin.length() && r.origin != "http://" + self) reply(c, 400, "application/json", answer("Not from this page."));
     else post(c, r);
@@ -646,7 +683,7 @@ static String headerValue(const String &head, const String &lower, const char *n
 }
 
 // "GET /path?query HTTP/1.1", the headers that matter, and the body after the blank line at `end`.
-static Request parseRequest(const String &head, int end) {
+static Request parseRequest(const String &head, int end, bool includeBody = true) {
   Request r;
   const int sp1 = head.indexOf(' '), sp2 = head.indexOf(' ', sp1 + 1);
   r.method = sp1 < 0 ? "GET" : head.substring(0, sp1);
@@ -663,7 +700,7 @@ static Request parseRequest(const String &head, int end) {
   if (colon >= 0) r.host = r.host.substring(0, colon);
   r.origin = headerValue(head, lower, "\norigin:");
   if (lanActive) r.authorization = headerValue(head, lower, "\nauthorization:");
-  r.body = head.substring(end + 4);
+  if (includeBody) r.body = head.substring(end + 4);
   return r;
 }
 
@@ -676,22 +713,120 @@ static long bodyLength(const String &head, int end) {
   return n < 0 || n > (long)BODY_MAX ? -1 : n;
 }
 
+static void stopFirmwareUpload() {
+  if (!firmwareClient) return;
+  firmwareUpdateAbort();
+  firmwareClient = nullptr;
+  powerRelease();
+}
+
+static bool writeFirmware(Connection &conn, const uint8_t *data, size_t bytes) {
+  firmwareLastByteAt = millis();
+  const char *error = firmwareUpdateWrite(data, bytes);
+  if (!error && firmwareUpdateRemaining()) return true;
+  uint32_t slot = 0;
+  if (!error) error = firmwareUpdateFinish(slot);
+  if (error) {
+    reply(conn.client, 400, "application/json", answer(error));
+  } else {
+    reply(conn.client, 200, "application/json", "{\"ok\":1,\"slot\":" + String(slot) + "}");
+    firmwareRestartAt = millis() + 750;
+  }
+  stopFirmwareUpload();
+  return false;
+}
+
+static bool beginFirmwareUpload(Connection &conn, int end) {
+  const auto reject = [&](int code, const char *error) {
+    reply(conn.client, code, "application/json", answer(error));
+    return false;
+  };
+  if (!lanActive) return reject(404, "Open the LAN panel to update firmware.");
+  if ((size_t)end + 4 > HEAD_MAX) return reject(400, "Invalid upload headers.");
+  const Request request = parseRequest(conn.head, end, false);
+  const String self = panelAddress.toString();
+  if (!authorizeLan(conn.client, request, self)) return false;
+  if (request.origin != "http://" + self) return reject(400, "Start the update from this LAN panel.");
+  if (phoneLanBusy() || netClaimed() || batteryLoadActive() || lanDisconnectAt)
+    return reject(409, "Unidex is busy. Try again when the current task finishes.");
+  if (const char *error = batteryTooLow()) return reject(409, error);
+
+  String lower = conn.head.substring(0, end + 2);
+  lower.toLowerCase();
+  static const char LENGTH[] = "\ncontent-length:";
+  const int lengthAt = lower.indexOf(LENGTH);
+  const String length = headerValue(conn.head, lower, LENGTH);
+  if (lengthAt < 0 || !length.length() || lower.indexOf(LENGTH, lengthAt + 1) >= 0 ||
+      lower.indexOf("\ntransfer-encoding:") >= 0 || lower.indexOf("\ncontent-encoding:") >= 0 ||
+      !headerValue(conn.head, lower, "\ncontent-type:").equalsIgnoreCase("application/octet-stream"))
+    return reject(400, "Send a firmware.bin with a fixed file size.");
+  const size_t maxBytes = firmwareUpdateInfo().maxBytes;
+  if (!maxBytes) return reject(400, "No inactive firmware slot is available.");
+  size_t size = 0;
+  for (size_t i = 0; i < length.length(); ++i) {
+    const unsigned digit = length[i] - '0';
+    if (digit > 9) return reject(400, "Invalid firmware length.");
+    if (size > (maxBytes - digit) / 10) return reject(413, "This file is larger than the firmware slot.");
+    size = size * 10 + digit;
+  }
+  const size_t buffered = conn.head.length() - (end + 4);
+  if (buffered > size) return reject(400, "Unexpected firmware length.");
+  if (const char *error = firmwareUpdateBegin(size)) return reject(400, error);
+
+  powerHold();
+  firmwareClient = &conn;
+  const bool receiving = writeFirmware(conn, reinterpret_cast<const uint8_t *>(conn.head.c_str() + end + 4), buffered);
+  conn.head = "";
+  return receiving;
+}
+
+static bool receiveFirmware(Connection &conn) {
+  if (!conn.client.connected()) {
+    stopFirmwareUpload();
+    return false;
+  }
+  const uint32_t now = millis();
+  if (now - firmwareLastByteAt >= FIRMWARE_IDLE_MS || now - conn.since >= FIRMWARE_MAX_MS) {
+    reply(conn.client, 408, "application/json", answer("Firmware upload timed out. Choose the file and try again."));
+    stopFirmwareUpload();
+    return false;
+  }
+  const int available = conn.client.available();
+  if (available <= 0) return true;
+  static uint8_t chunk[4096];
+  const size_t length = std::min({(size_t)available, firmwareUpdateRemaining(), sizeof chunk});
+  const int received = conn.client.read(chunk, length);
+  return received <= 0 || writeFirmware(conn, chunk, received);
+}
+
+static void closeHttp(Connection &conn) {
+  conn.file.close();
+  conn.remaining = 0;
+  conn.client.stop();
+  conn.client = WiFiClient();
+  conn.head = "";
+}
+
 static void serveHttp() {
   for (WiFiClient incoming = http.accept(); incoming; incoming = http.accept()) {
-    int slot = 0;
+    int slot = -1;
     for (int i = 0; i < CONNECTIONS; i++) {
+      if (&connections[i] == firmwareClient) continue;
       if (!connections[i].client) {
         slot = i;
         break;
       }
-      if (connections[i].since < connections[slot].since) slot = i;  // all busy: the one waiting longest goes
+      if (slot < 0 || connections[i].since < connections[slot].since) slot = i;  // all busy: drop the oldest
     }
-    connections[slot].client.stop();
-    connections[slot].file.close();
+    closeHttp(connections[slot]);
     incoming.setNoDelay(true);  // small replies go out at once
     connections[slot] = {incoming, "", millis(), fs::File(), 0};
   }
   for (Connection &conn : connections) {
+    if (&conn == firmwareClient) {
+      if (!receiveFirmware(conn)) closeHttp(conn);
+      continue;
+    }
     if (!conn.client) continue;
     if (conn.remaining) {  // sending a recording: the next piece
       static uint8_t piece[4096];
@@ -701,21 +836,25 @@ static void serveHttp() {
       lastUse = millis();  // still in use: no idle stop mid-playback
       if (lanActive && sent) powerActivity();
       if (conn.remaining) continue;
-      conn.file.close();
-      conn.client.stop();
-      conn.client = WiFiClient();
-      conn.head = "";
+      closeHttp(conn);
       continue;
     }
-    uint8_t buf[256];
+    uint8_t buf[257];
     while (conn.client.available() && conn.head.length() < HEAD_MAX + BODY_MAX) {
-      const int n = conn.client.read(buf, sizeof buf);
+      const int n = conn.client.read(buf, sizeof buf - 1);
       if (n <= 0) break;
-      conn.head.concat((const char *)buf, n);
+      buf[n] = 0;
+      if (!conn.head.concat((const char *)buf, n)) break;
+      // Leave the binary body in the socket after the first chunk containing the headers.
+      if (conn.head.startsWith("POST /firmware ") && conn.head.indexOf("\r\n\r\n") >= 0) break;
     }
     const int end = conn.head.indexOf("\r\n\r\n");
     const bool waiting = conn.client.connected() && millis() - conn.since < REQUEST_WAIT_MS;
     if (end >= 0) {
+      if (conn.head.startsWith("POST /firmware ")) {
+        if (!beginFirmwareUpload(conn, end)) closeHttp(conn);
+        continue;
+      }
       const long body = bodyLength(conn.head, end);
       if (body < 0) {
         reply(conn.client, 400, "application/json", answer("That's too much to save at once."));
@@ -728,9 +867,7 @@ static void serveHttp() {
     } else if (waiting && conn.head.length() < HEAD_MAX) {
       continue;  // still waiting for the request
     }
-    conn.client.stop();
-    conn.client = WiFiClient();
-    conn.head = "";
+    closeHttp(conn);
   }
 }
 
@@ -919,8 +1056,8 @@ const char *phoneJoinCode() { return joinCode; }
 // The persistent listener shares the existing parser and access checks with the temporary portal.
 void phoneLanStop() {
   if (!lanActive) return;
-  for (Connection &conn : connections)
-    conn.client.stop(), conn.client = WiFiClient(), conn.head = "", conn.file.close(), conn.remaining = 0;
+  stopFirmwareUpload();
+  for (Connection &conn : connections) closeHttp(conn);
   http.end();
   appfetchCancel();
   lanActive = false;
@@ -929,6 +1066,7 @@ void phoneLanStop() {
 }
 
 void phoneLanPoll() {
+  if (firmwareRestartAt && (int32_t)(millis() - firmwareRestartAt) >= 0) ESP.restart();
   if (on) return;  // hotspot owns the server and radio
   if (lanDisconnectAt && (int32_t)(millis() - lanDisconnectAt) >= 0) {
     lanDisconnectAt = 0;
@@ -976,6 +1114,7 @@ void phoneLanPoll() {
     if (!http) { http.end(); lanUrl[0] = 0; return; }
     lanCatalogueChecked = false;
     lanActive = true;
+    firmwareUpdateConfirm();
     if (!firstLanReadyMs) firstLanReadyMs = millis();
   }
   serveHttp();
@@ -988,6 +1127,7 @@ void phoneLanPoll() {
 bool phoneLanKeepAwake() { return !on && !linkOn() && (WiFi.status() == WL_CONNECTED || netConnecting()); }
 
 bool phoneLanBusy() {
+  if (firmwareClient || firmwareRestartAt) return true;
   if (!lanActive) return false;
   if (appfetchBusy()) return true;
   for (const Connection &conn : connections)

@@ -181,7 +181,12 @@ site always offers a released version, and writes two manifests for
 [ESP Web Tools](https://esphome.github.io/esp-web-tools/):
 
 - **Install** has the bootloader, partitions, boot_app0 and the app, and is offered with a full erase.
-- **Update** has the app only, so badges, apps, events and settings stay.
+- **Update** writes the app to `app0` and selects it for boot, so badges, apps, events and settings stay.
+
+Once a build with OTA is installed, open **Settings → Firmware update** in the LAN panel and choose the
+application `firmware.bin`. The panel writes the inactive slot and restarts only after image verification. Use
+the app file from the build or release. USB recovery writes `firmware.bin` to `0x10000` and the build's
+`boot_app0.bin` to `0xE000` to select it after a LAN update has switched slots.
 
 ESP Web Tools flashes at 115200 baud with a modern esptool stub, which works on this board. The PlatformIO upload
 problems came from its older bundled esptool together with a baud switch. The Tools page talks to the device with the
@@ -263,16 +268,19 @@ Everything here was read from the chip, seen working on the device, or taken fro
 <details>
 <summary><b>Power and battery</b></summary>
 
-- Deep sleep after 10 s idle (`IDLE_MS` in `src/core/power.cpp`), never while a button is held.
+- Deep sleep after the idle timeout in `src/core/power.cpp`, never while a button is held. In Battery
+  Saver the LAN panel keeps the board awake for five minutes from the last activity or entry into the saver,
+  whichever is later.
 - In sleep, GPIO17 stays HIGH, GPIO6 LOW, and the panel's RST/CS HIGH, so the panel sits in its own deep sleep
   with its RAM intact and the first refresh after a wake is a partial (no flash). At boot each level is set
   *before* its hold is released; a floating pin would cut battery or panel power.
 - While awake, the main loop light-sleeps between polls and wakes on a button or at the 10 s deadline. It skips
   light sleep while a button is held and while USB is connected (light sleep pauses USB, which the Mac sync needs).
-- **On USB power it doesn't deep sleep**, so the Mac sync, the badge maker and flashing always find it. The
-  board can't sense USB power directly (USB 5 V isn't wired to any GPIO), so "USB power" means a computer is
-  talking to it, or the battery reads at least 4.19 V (the charger holding it at 4.2 V while topping up). A plain
-  charger that has *finished* charging looks like battery, so it sleeps. Checked at most every 10 s.
+- `batteryCharging()` is shared by the battery UI, the percentage estimate and the automatic power policy.
+  It uses recent USB frames or, without them, a battery-voltage median above 4192 mV (ten samples, one per
+  second). USB 5 V is not sensed in the normal hardware setup. A quiet USB bus or a charger holding the
+  battery below the threshold can look like battery power. A live USB host keeps CDC available even in Battery
+  Saver; HID remote wake retains its own USB session state while the board stays awake.
 - The CPU runs at 80 MHz (240 MHz only while WiFi is on). WiFi is off except for an app's scan or fetch, Notes and the NTP
   sync.
 - Datasheet estimates, **not measured** with a meter: about 2 mA awake with light sleep (vs about 20 mA). In deep

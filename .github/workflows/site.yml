@@ -117,16 +117,17 @@ jobs:
           python3 - "$1" "$2" <<'PY'
           import json, sys
           out, version = sys.argv[1], sys.argv[2]
-          parts = [("bootloader.bin", 0x0), ("partitions.bin", 0x8000), ("boot_app0.bin", 0xE000),
-                   ("firmware.bin", 0x10000)]  # files live on the SD card: no filesystem image
+          selector = ("boot_app0.bin", 0xE000)
+          app = ("firmware.bin", 0x10000)
+          parts = [("bootloader.bin", 0x0), ("partitions.bin", 0x8000), selector, app]
           def manifest(parts, erase):
               return {"name": "unidex", "version": version, "new_install_prompt_erase": erase,
                       "new_install_improv_wait_time": 0,
                       "builds": [{"chipFamily": "ESP32-S3",
                                   "parts": [{"path": p, "offset": o} for p, o in parts]}]}
-          # Install: everything, offered with a full erase. Update: the app only, so data stays.
+          # Install: everything, offered with a full erase. Update: app0 and its boot selection.
           json.dump(manifest(parts, True), open(f"{out}/install.json", "w"), indent=2)
-          json.dump(manifest([p for p in parts if p[0] == "firmware.bin"], False), open(f"{out}/update.json", "w"), indent=2)
+          json.dump(manifest([app, selector], False), open(f"{out}/update.json", "w"), indent=2)
           PY
           }
           SH

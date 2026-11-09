@@ -1,6 +1,5 @@
-// Writes the firmware (firmware.bin, the app only, at 0x10000) and never erases, so the settings (NVS) and the SD
-// card stay. ESP Web Tools can't do this: it erases the whole device for firmware without Improv Serial. Used by the
-// Install page's Update button and the Tools page's one-click sync.
+// Writes the app to app0 and selects it for boot. The settings (NVS) and the SD card stay.
+// Used by the Install page's Update button and the Tools page's one-click sync.
 // Channels: 'release', the newest release (firmware/); 'beta', the beta branch as it is now (firmware/beta/: the
 // newest changes, before they're tested enough to release); or an older release by its tag, such as 'v1.12'
 // (firmware/legacy/v1.12/, up to 15 before the newest, listed in firmware/legacy/versions.json).
@@ -41,13 +40,16 @@ export async function updateFirmware(port, status, channel = 'release') {
     status('Connecting…');
     await loader.main();  // resets into the bootloader and starts the flasher
     status('Downloading…');
-    const resp = await fetch(`${firmwareDir(channel)}/firmware.bin`, { cache: 'no-store' });
-    if (!resp.ok) throw new Error(`download failed (${resp.status})`);
-    const data = new Uint8Array(await resp.arrayBuffer());
+    const dir = firmwareDir(channel);
+    const fileArray = await Promise.all([['firmware.bin', 0x10000], ['boot_app0.bin', 0xE000]].map(async ([name, address]) => {
+      const resp = await fetch(`${dir}/${name}`, { cache: 'no-store' });
+      if (!resp.ok) throw new Error(`${name} download failed (${resp.status})`);
+      return { data: new Uint8Array(await resp.arrayBuffer()), address };
+    }));
     await loader.writeFlash({
-      fileArray: [{ data, address: 0x10000 }],
+      fileArray,
       flashSize: 'keep', flashMode: 'keep', flashFreq: 'keep', eraseAll: false, compress: true,
-      reportProgress: (i, written, total) => status(`Updating… ${Math.floor(written * 100 / total)}%`),
+      reportProgress: (i, written, total) => status(i === 0 ? `Updating… ${Math.floor(written * 100 / total)}%` : 'Selecting firmware…'),
     });
     status('Restarting…');
     await transport.setRTS(true);

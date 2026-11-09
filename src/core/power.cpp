@@ -13,16 +13,10 @@
 #include <esp_task_wdt.h>
 
 static uint32_t sleepS = 10;
-static bool saver, likelyWallPower, sleepSoon;
-static uint32_t powerSampleAt;
+static bool saver, sleepSoon;
 static constexpr uint32_t LAN_IDLE_MS = 5 * 60 * 1000;
 
 static uint32_t idleTimeoutMs() { return (powerSaver() ? 5 : sleepS) * 1000; }
-
-static void sampleWallPower() {
-  likelyWallPower = batteryAssumesWallPower(batteryMillivolts());
-  powerSampleAt = millis();
-}
 
 static const gpio_num_t PIN_LATCH = GPIO_NUM_17;      // HIGH keeps battery power on; has a pull-down
 // Active LOW: the codec's supply, which also powers the I2C pull-ups. clock.cpp turns it on at start-up (the clock chip
@@ -78,7 +72,6 @@ void powerInit() {
   digitalWrite(PIN_AUDIO_PWR, HIGH);
 
   setCpuFrequencyMhz(80);
-  sampleWallPower();
   lastActivity = millis();
 
   if (probePhase == ProbePhase::Baseline || probePhase == ProbePhase::AfterMinute) {
@@ -135,7 +128,7 @@ static bool wakeDueDuringProbe() {
 }
 
 const char *powerStartBatteryProbe() {
-  if (usbHostActive()) return "Use battery or wall power";
+  if (usbHostTrafficRecent()) return "Use battery or wall power";
   if (holds || phoneLanBusy()) return "Busy, try again";
   if (wakeDueDuringProbe()) return "Timer or reminder due soon";
   probePhase = ProbePhase::Idle;
@@ -152,12 +145,11 @@ const BatteryProbeResult *powerBatteryProbeResult() {
 }
 
 void powerSleepIfIdle() {
-  if (!usbHostConnected() && millis() - powerSampleAt >= 10000) sampleWallPower();
   // Sleeping with a button held would wake straight away, in a loop.
   if (inputAnyDown() || holds || netClaimed()) return;
   if (probeRequested) {
     probeRequested = false;
-    if (wakeDueDuringProbe() || phoneLanBusy() || usbHostActive()) return;
+    if (wakeDueDuringProbe() || phoneLanBusy() || usbHostTrafficRecent()) return;
     probePhase = ProbePhase::Baseline;
     deepSleep(1000000ULL);  // take both readings at the same point in the boot sequence
     return;
@@ -166,9 +158,8 @@ void powerSleepIfIdle() {
 #if UNIDEX_DEV
   return;  // test build: always awake, so the test tools never find it asleep (USB host detection can drop out)
 #endif
-  // The manual saver can let a suspended USB session expire, even when the
-  // controller still remembers a host. The default preserves remote wake.
-  if (usbHostActive() || (!saver && (usbHostConnected() || likelyWallPower))) return;
+  // Preserve a live COM connection even with manual Battery Saver enabled.
+  if (usbHostTrafficRecent() || !powerSaver()) return;
   if (phoneLanBusy() || (phoneLanKeepAwake() && !powerLanIdleExpired())) return;
   deepSleep(untilWake());
 }
@@ -232,13 +223,21 @@ void powerNap() {
 
 int powerSleepSeconds() { return sleepS; }
 
-bool powerSaver() { return saver || (!usbHostConnected() && !likelyWallPower); }
+bool powerSaver() { return saver || !batteryCharging(); }
 
 bool powerSaverSetting() { return saver; }
 
 bool powerLanIdleExpired() {
-  return powerSaver() && !holds && !netClaimed() &&
-         (sleepSoon || millis() - lastActivity >= LAN_IDLE_MS);
+  static bool wasSaving;
+  static uint32_t savingSince;
+  const bool saving = powerSaver();
+  const uint32_t now = millis();
+  // Start the idle allowance when external power is no longer detected, even if the panel was
+  // already idle. A PC going to sleep can also stop sending frames without losing VBUS.
+  if (saving && !wasSaving) savingSince = now;
+  wasSaving = saving;
+  return saving && !holds && !netClaimed() &&
+         (sleepSoon || (now - lastActivity >= LAN_IDLE_MS && now - savingSince >= LAN_IDLE_MS));
 }
 
 extern TaskHandle_t loopTaskHandle;  // Arduino's main loop task (cores/esp32/main.cpp)

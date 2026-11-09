@@ -290,6 +290,12 @@ max-width:560px;margin:0;padding:7px 9px 7px 16px;min-height:66px}
 <label class="field"><span>Name <i>(up to 20 characters)</i></span><input class="input" id="dname" maxlength="20" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="done"></label>
 <button class="btn" id="nameSave" data-save>Save</button><p class="say" id="nameSay" role="status"></p></div>
 <div class="card hidden" id="wakeCard"><h2>PC power</h2><p class="hint">Control the connected computer. Sleep depends on its Windows settings.</p><button class="btn" id="wakePc">Wake PC</button> <button class="btn" id="sleepPc">Sleep PC</button><p class="say" id="wakeSay" role="status"></p></div>
+<div class="card hidden" id="firmwareCard"><h2>Firmware update</h2><p class="hint">Choose the <code>firmware.bin</code> for your Unidex. It will restart after installing the update.</p>
+<p class="hint" id="firmwareVersion"></p><form id="firmwareForm">
+<label class="field"><span>Firmware file (.bin)</span><input class="input" id="firmwareFile" type="file" accept=".bin" required></label>
+<button class="btn primary" id="firmwareInstall" type="submit">Install and restart</button></form>
+<progress class="hidden" id="firmwareProgress" max="100" value="0" aria-label="Firmware upload progress"></progress>
+<p class="say" id="firmwareSay" role="status"></p></div>
 <div class="card"><div class="ch"><i class="ic lilac"><svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z"/></svg></i><div><h2>Sleep after</h2><p class="hint">How long it stays on after the last button press.</p></div></div>
 <div class="seg" role="radiogroup" aria-label="Sleep after" style="margin:0"><label><input type="radio" name="sleep" value="10"><span>10 s</span></label><label><input type="radio" name="sleep" value="20"><span>20 s</span></label><label><input type="radio" name="sleep" value="30"><span>30 s</span></label><label><input type="radio" name="sleep" value="60"><span>1 min</span></label></div>
 <p class="say" id="sleepSay" role="status"></p></div>
@@ -605,10 +611,71 @@ if(p)return tell(say,p,'bad');if(!Object.keys(v).length)return tell(say,'Nothing
 busy(b,true);post('/set',v).then(loadSetup).then(function(){tell(say,'');saved(b)},function(e){busy(b,false);tell(say,e.message,'bad')})}});
 $('clearAll').onclick=function(){var b=this;twoTap(b,'Tap again to remove it all',function(){busy(b,true,'Removing…');
 post('/clear',{}).then(loadSetup).then(function(){busy(b,false);tell('clearSay','Removed. WiFi and keys are gone from this unidex.','ok')},function(e){busy(b,false);tell('clearSay',e.message,'bad')})})};
-fetch('/panel-mode').then(function(r){return r.json()}).then(function(o){if(o.lan)$('wakeCard').classList.remove('hidden')});
+fetch('/panel-mode').then(function(r){return r.json()}).then(function(o){if(o.lan){$('wakeCard').classList.remove('hidden');return firmwareStatus().then(showFirmware)}}).catch(function(){});
 function pcPower(b,path){busy(b,true,'Sending...');post(path,{}).then(function(){busy(b,false);tell('wakeSay','Command sent.','ok')},function(e){busy(b,false);tell('wakeSay',e.message,'bad')})}
 $('wakePc').onclick=function(){pcPower(this,'/wake-pc')};
 $('sleepPc').onclick=function(){pcPower(this,'/sleep-pc')};
+var firmware=null;
+async function firmwareStatus(signal){
+  var response=await fetch('/firmware-status',{cache:'no-store',signal:signal});
+  if(!response.ok)throw new Error('Firmware status is unavailable.');
+  return response.json();
+}
+function showFirmware(info){
+  firmware=info;
+  $('firmwareCard').classList.toggle('hidden',!info.maxBytes);
+  $('firmwareVersion').textContent='Installed version: '+info.version;
+}
+function uploadFirmware(file,target){
+  return new Promise(function(resolve,reject){
+    var xhr=new XMLHttpRequest(), sent=false;
+    xhr.open('POST','/firmware');
+    xhr.responseType='json';
+    xhr.timeout=195000;
+    xhr.setRequestHeader('Content-Type','application/octet-stream');
+    xhr.upload.onprogress=function(e){if(e.lengthComputable)$('firmwareProgress').value=e.loaded/e.total*100};
+    xhr.upload.onload=function(){sent=true;tell('firmwareSay','Verifying firmware…')};
+    xhr.onload=function(){
+      var result=xhr.response;
+      if(xhr.status==200&&result&&result.ok&&result.slot)resolve(result.slot);
+      else reject(new Error(result&&result.error||(xhr.status==401?'Sign in to the LAN panel again.':'Firmware upload failed (HTTP '+xhr.status+').')));
+    };
+    xhr.onerror=xhr.ontimeout=function(){
+      if(sent)resolve(target);  // the restart can drop the response after a complete upload
+      else reject(new Error('Connection lost during upload. Reopen the LAN panel and try again.'));
+    };
+    xhr.send(file);
+  });
+}
+async function waitForFirmware(slot){
+  var deadline=Date.now()+45000;
+  while(Date.now()<deadline){
+    await new Promise(function(resolve){setTimeout(resolve,1500)});
+    var controller=new AbortController(), timer=setTimeout(function(){controller.abort()},2500);
+    try{
+      var info=await firmwareStatus(controller.signal);
+      if(info.slot===slot)return info;
+    }catch(e){}finally{clearTimeout(timer)}
+  }
+  throw new Error('The new firmware has not answered at this address. Check the LAN panel on Unidex.');
+}
+$('firmwareForm').onsubmit=async function(e){
+  e.preventDefault();
+  var input=$('firmwareFile'), file=input.files[0], button=$('firmwareInstall'), bar=$('firmwareProgress');
+  if(!firmware||button.disabled)return;
+  if(!file||!file.size||!/\.bin$/i.test(file.name))return tell('firmwareSay','Choose an application firmware.bin file.','bad');
+  if(file.size>firmware.maxBytes)return tell('firmwareSay','This file is larger than the firmware slot.','bad');
+  busy(button,true,'Updating…');input.disabled=true;bar.value=0;bar.classList.remove('hidden');
+  tell('firmwareSay','Uploading firmware…');
+  try{
+    var slot=await uploadFirmware(file,firmware.target);
+    tell('firmwareSay','Waiting for Unidex to restart…');
+    var info=await waitForFirmware(slot);
+    showFirmware(info);input.value='';
+    tell('firmwareSay','Updated to '+info.version+'.','ok');
+  }catch(error){tell('firmwareSay',error.message,'bad')}
+  finally{busy(button,false);input.disabled=false;bar.classList.add('hidden')}
+};
 function done(b){busy(b,true,'Closing…');post('/done',{}).then(function(){$('bye').classList.remove('hidden')},function(e){busy(b,false);toast(e.message)})}
 // --- Tools: the badge maker and the Pet, made on the phone and sent with a POST ---
 // The badge: a photo -> 200x200 grey -> black and white (dithered if it's a photo) -> a 1-bit BMP, as the website's

@@ -30,6 +30,20 @@ static int noise(uint32_t &rng) {
 
 int main() {
   {
+    ChargeVoltage voltage;
+    for (uint32_t i = 0; i < 10; ++i) voltage.add(4192, i * 1000);
+    check(!voltage.aboveThreshold, "voltage equal to the threshold counts as battery");
+    check(!voltage.due(9999) && voltage.due(10000), "sample the ADC at most once per second");
+    voltage.add(4252, 10000);
+    check(!voltage.aboveThreshold, "one large spike does not count as wall power");
+    for (uint32_t i = 11; i < 21; ++i) voltage.add(4193, i * 1000);
+    check(voltage.aboveThreshold, "stable voltage above the threshold counts as wall power");
+    for (uint32_t i = 21; i < 31; ++i) voltage.add(4191, i * 1000);
+    check(!voltage.aboveThreshold, "unplugging drops the median below the threshold");
+    voltage.add(4200, 40000);
+    check(voltage.aboveThreshold, "old readings are forgotten after a gap of ten seconds");
+  }
+  {
     State s;
     check(update(s, 1200, false, 0) == -1, "no battery: below 2.5 V shows nothing");
   }

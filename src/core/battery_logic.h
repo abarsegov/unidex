@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <stdint.h>
 
 // Battery % from the voltage, with no Arduino in it (tools/batterytest checks it on a computer).
@@ -6,6 +7,34 @@
 // the charger lifts the reading above the battery's resting voltage (then holds it at 4.20 V), which
 // read through the resting curve would show ~100% at once.
 namespace battery {
+
+// Wall adapters without USB data: in the 30-minute captures, after the first minute the battery
+// reached at most 4191 mV and the wall adapter stayed at or above 4193 mV. Near a full cell these
+// ranges can overlap, so this is a fallback when there is no fresh evidence of a USB host.
+struct ChargeVoltage {
+  static constexpr int THRESHOLD_MV = 4192;
+  static constexpr uint32_t INTERVAL_MS = 1000;
+  static constexpr int SAMPLES = 10;
+  int samples[SAMPLES]{};
+  uint32_t lastSample = 0;
+  int count = 0, next = 0;
+  bool aboveThreshold = false;
+
+  bool due(uint32_t now) const { return !count || now - lastSample >= INTERVAL_MS; }
+
+  void add(int mv, uint32_t now) {
+    if (now - lastSample >= INTERVAL_MS * SAMPLES) count = next = 0;
+    samples[next] = mv;
+    next = (next + 1) % SAMPLES;
+    if (count < SAMPLES) ++count;
+    lastSample = now;
+
+    int sorted[SAMPLES];
+    std::copy_n(samples, count, sorted);
+    std::sort(sorted, sorted + count);
+    aboveThreshold = sorted[(count - 1) / 2] + sorted[count / 2] > 2 * THRESHOLD_MV;
+  }
+};
 
 // Resting LiPo curve, mV -> %. Voltage is far from linear in charge, so interpolate between points.
 // 100% from 4.15 V: a full cell settles there within minutes of the charger stopping.
