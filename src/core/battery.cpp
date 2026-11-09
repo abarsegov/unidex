@@ -10,6 +10,7 @@ static const int PIN_BATTERY = 4;  // ADC1 ch3, behind a divider by 2
 // Calibration: with a full battery and the charger finished, the raw reading was 4.08-4.09 V where the
 // cell really sits at about 4.17 V, so the ADC reads about 2% low through the 200k/200k divider.
 static const float CALIBRATION = 4170.0f / 4085.0f;
+static battery::ChargeVoltage chargeVoltage;
 
 #if UNIDEX_DEV
 static int fakeMv;  // test build (X BATTMV <mv>): pretend the battery reads this (0 = the real reading)
@@ -36,13 +37,6 @@ BatteryAdcSample batteryAdcSample() {
     hi = max(hi, raw);
   }
   return {mv, sum / samples, hi - lo};
-}
-
-static bool batteryUsbHostConnected() {
-#if UNIDEX_DEV
-  if (fakeMv) return false;
-#endif
-  return usbHostConnected();
 }
 
 // Kept through deep sleep and through a restart (a crash, the watchdog, an update), so the % carries on instead of
@@ -83,6 +77,7 @@ bool batteryKept() {
 
 void batteryFake(int mv) {
   fakeMv = mv;
+  chargeVoltage = battery::ChargeVoltage();
   restore();
   state = battery::State();  // a pretend reading mustn't shape the real %: start again as at power-up
   keep();
@@ -109,8 +104,7 @@ void batteryPrintCalls() {
 
 int batteryPercent() {
   const int mv = batteryMillivolts();
-  // Apply the charging offset only with a USB host or a reading near the charger regulation voltage.
-  const bool charging = batteryUsbHostConnected() || (mv >= 4190 && mv <= 4240);
+  const bool charging = batteryCharging();
   restore();
   const int pct = battery::update(state, mv, charging, millis());
   keep();
@@ -128,7 +122,12 @@ const char *batteryTooLow() {
 bool batteryEmpty() { return battery::level(batteryMillivolts(), batteryCharging()) == battery::Level::EMPTY; }
 
 bool batteryCharging() {
-  return batteryUsbHostConnected() || batteryAssumesWallPower(batteryMillivolts());
+  const uint32_t now = millis();
+  if (chargeVoltage.due(now)) chargeVoltage.add(batteryMillivolts(), now);
+#if UNIDEX_DEV
+  if (fakeMv) return chargeVoltage.aboveThreshold;
+#endif
+  return usbHostTrafficRecent() || chargeVoltage.aboveThreshold;
 }
 
 bool batteryToppingUp() {

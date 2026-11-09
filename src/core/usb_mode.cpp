@@ -8,6 +8,7 @@ void usbModePoll() {}
 bool usbModeTakeReturnToSettings() { return false; }
 bool usbHostConnected() { return false; }
 bool usbHostActive() { return false; }
+bool usbHostTrafficRecent() { return false; }
 const char *usbWakePc() { return "USB wake unavailable"; }
 const char *usbSleepPc() { return "USB sleep unavailable"; }
 #else
@@ -389,6 +390,29 @@ bool usbHostActive() {
   return usbHostConnected() && !(USB0.dsts & USB_SUSPSTS_M);
 }
 
+bool usbHostTrafficRecent() {
+  static bool haveFrame, sawTraffic;
+  static uint32_t previousFrame, lastTraffic;
+  if (!usbHostConnected()) {
+    haveFrame = sawTraffic = false;
+    return false;
+  }
+  // DSTS.SOFFN is the last received SOF number. Mount/session flags can outlive the cable.
+  const uint32_t now = millis(), status = USB0.dsts, frame = status & USB_SOFFN_M;
+  if (!(status & USB_SUSPSTS_M)) {
+    if (haveFrame && frame != previousFrame) {
+      lastTraffic = now;
+      sawTraffic = true;
+    }
+    previousFrame = frame;
+    haveFrame = true;
+  } else {
+    haveFrame = false;
+  }
+  if (sawTraffic && now - lastTraffic >= 1000) sawTraffic = false;
+  return sawTraffic;
+}
+
 const char *usbWakePc() {
   if (!usbHostConnected()) return "USB is not connected";
   if (!(USB0.dsts & USB_SUSPSTS_M)) return "USB is active";
@@ -462,6 +486,7 @@ void usbModePoll() {
   if (normalUsb) {
     if (usbStarted) {
       pollWakeSession();
+      usbHostTrafficRecent();
       if (sleepReleasePending && tud_hid_ready() && systemControl().release()) sleepReleasePending = false;
     }
     return;

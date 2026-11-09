@@ -8,9 +8,8 @@ struct BatteryProbeResult {
   BatteryAdcSample before, after;
 };
 BatteryAdcSample batteryAdcSample();  // calibrated VBAT and a burst of raw GPIO4 readings
-constexpr bool batteryAssumesWallPower(int mv) { return mv > 4170; }
 int batteryPercent();     // 0-100 estimated from voltage, or -1 if no battery is detected
-bool batteryCharging();    // USB host detected or VBAT above the wall power threshold
+bool batteryCharging();   // recent USB frames or filtered VBAT above the wall adapter threshold
 // nullptr when there's charge for heavy work (WiFi, the radio, recording), else the reason to show ("Battery too
 // low"). Always fine on USB or with no battery fitted.
 const char *batteryTooLow();

@@ -10,6 +10,7 @@ void usbModePoll();
 bool usbModeTakeReturnToSettings();
 bool usbHostConnected();
 bool usbHostActive();  // USB is configured and the host is running the bus
+bool usbHostTrafficRecent();  // fresh host frames, independent of the retained HID wake session
 // Main-loop calls. Return a message on failure, or nullptr after sending the signal.
 const char *usbWakePc();
 const char *usbSleepPc();
