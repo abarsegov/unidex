@@ -54,7 +54,7 @@ void drawLog() {
     case Phase::Pc: drawEmpty("Battery log", "Recording on computer", "Hold PWR to stop"); break;
     case Phase::WaitWall: drawEmpty("Battery log", "Connect wall charger", "Then tap PWR"); break;
     case Phase::Wall: drawEmpty("Battery log", "Recording on wall charger", "Hold PWR to stop"); break;
-    case Phase::WaitBattery: drawEmpty("Battery log", "Unplug the charger", "Then tap PWR"); break;
+    case Phase::WaitBattery: drawEmpty("Battery log", "Unplug USB", "Then tap PWR"); break;
     case Phase::Battery: drawEmpty("Battery log", "Recording on battery", "Hold PWR to stop"); break;
     default: break;
   }
@@ -154,7 +154,7 @@ String logPath(const char *id) { return String("/battery-logs/") + id + ".csv"; 
 
 void error(const char *reason) { usbSerial().printf("ERR BATLOG %s\n", reason); }
 
-void start(const char *args, bool wallFirst) {
+void start(const char *args, const char *command, Phase initial) {
   if (logFile) return error("busy");
   const char *separator = strchr(args, ' ');
   if (!separator || !validId(args, separator - args)) return error("invalid_id");
@@ -181,8 +181,8 @@ void start(const char *args, bool wallFirst) {
   durationMs = seconds * 1000;
   phoneLanStop();
   netOff();
-  usbSerial().printf("OK BATLOG %s %s\n", wallFirst ? "ARM" : "START", runId);
-  beginPhase(wallFirst ? Phase::WaitWall : Phase::Pc);
+  usbSerial().printf("OK BATLOG %s %s\n", command, runId);
+  beginPhase(initial);
 }
 
 void startSend(const char *id) {
@@ -237,9 +237,11 @@ bool batteryLogUsb(const char *line) {
   if (strncmp(line, "BATLOG ", 7) != 0) return false;
   const char *cmd = line + 7;
   if (strncmp(cmd, "START ", 6) == 0) {
-    start(cmd + 6, false);
+    start(cmd + 6, "START", Phase::Pc);
   } else if (strncmp(cmd, "ARM ", 4) == 0) {
-    start(cmd + 4, true);
+    start(cmd + 4, "ARM", Phase::WaitWall);
+  } else if (strncmp(cmd, "BATTERY ", 8) == 0) {
+    start(cmd + 8, "BATTERY", Phase::WaitBattery);
   } else if (strcmp(cmd, "STATUS") == 0) {
     const uint32_t elapsed = logFile ? millis() - phaseAt : 0;
     usbSerial().printf("OK BATLOG STATUS %s %s %lu\n", phaseName(), *runId ? runId : "-", (unsigned long)elapsed);

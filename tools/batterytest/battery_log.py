@@ -225,12 +225,14 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     start = sub.add_parser('start', help='start a full run with the PC stage')
     arm = sub.add_parser('arm', help='start with the wall and battery stages')
-    for p in (start, arm):
+    battery = sub.add_parser('battery', help='record just the battery stage')
+    for p in (start, arm, battery):
         p.add_argument('--port', required=True)
         p.add_argument('--id', required=True, type=valid_id)
         p.add_argument('--seconds', type=seconds_value, default=1800)
     start.add_argument('--live', help='save live PC-stage CSV until wait_wall')
     arm.set_defaults(live=None)
+    battery.set_defaults(live=None)
     for name in ('status', 'stop'):
         p = sub.add_parser(name)
         p.add_argument('--port', required=True)
@@ -243,7 +245,7 @@ def main():
     analysis.add_argument('--seconds', type=seconds_value, default=1800, help='planned duration per source (default 1800)')
     args = parser.parse_args()
     try:
-        if args.command in ('start', 'arm'): command_start(args)
+        if args.command in ('start', 'arm', 'battery'): command_start(args)
         elif args.command in ('status', 'stop'): command_simple(args)
         elif args.command == 'download': command_download(args)
         else: analyze(args)
