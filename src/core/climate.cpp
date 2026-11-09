@@ -8,6 +8,7 @@ static const uint8_t SHTC3_ADDR = 0x70;
 static const uint16_t CMD_WAKEUP = 0x3517;
 static const uint16_t CMD_MEASURE = 0x7866;  // normal mode, temperature first, no clock stretching
 static const uint16_t CMD_SLEEP = 0xB098;
+static constexpr float TEMPERATURE_OFFSET_C = -4.0f;  // board heating compensation from Waveshare's example
 
 static bool command(uint16_t c) {
   Wire.beginTransmission(SHTC3_ADDR);
@@ -41,7 +42,8 @@ bool climateRead(ClimateReading &out) {
   }
   command(CMD_SLEEP);
   if (!ok) return false;
-  out.temperatureC = -45.0f + 175.0f * (uint16_t)(d[0] << 8 | d[1]) / 65535.0f;
+  const float sensorTemperatureC = -45.0f + 175.0f * (uint16_t)(d[0] << 8 | d[1]) / 65535.0f;
+  out.temperatureC = sensorTemperatureC + TEMPERATURE_OFFSET_C;
   out.humidityRH = 100.0f * (uint16_t)(d[3] << 8 | d[4]) / 65535.0f;
   return true;
 }

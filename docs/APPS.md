@@ -121,7 +121,7 @@ Only the app's own `data/` folder. Names use a-z, 0-9, `.`, `_` and `-`.
 | `unidex.random(n)` | A number from 1 to `n`. |
 | `unidex.frame(ms)` | API 3: shows `draw()` now, mid-function, as an animation frame, then waits `ms` (up to 1000). At most 60 a call; the screen and the wait don't count against the app's time. |
 | `unidex.chime()` | API 5: plays the device's chime (about half a second) and returns true, or false if it was skipped: Settings > Alert sound is off, it already chimed less than a second ago, or the speaker is busy (a recording). At Volume 0 it plays silently. The chime doesn't count against the app's time. |
-| `unidex.climate()` | API 6: a table with `temperature_c` (°C) and `humidity_rh` (% relative humidity) from the board's sensor, or `nil` and the reason if it can't be read. Takes about 20 ms. The sensor is inside the device, so it reads a few degrees over the room, more while charging or on WiFi, and is slow to follow a change of room. |
+| `unidex.climate()` | API 6: a table with `temperature_c` (°C) and `humidity_rh` (% relative humidity) from the board's sensor, or `nil` and the reason if it can't be read. Takes about 20 ms. The temperature includes a −4 °C correction for board heating. The amount of heating varies with charging and WiFi activity. |
 | `unidex.api` | The API level of this firmware: 6 from v1.13, with `unidex.climate` (5 before it, after v1.10; 4 before `unidex.chime`, 3 before games, 2 before `unidex.frame`, 1 before `unidex.wifi`). |
 
 ### The network (permission `"wifi"`)
