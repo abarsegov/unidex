@@ -1,4 +1,5 @@
 #include "usbsync.h"
+#include "battery_log.h"
 #include "usb_serial.h"
 #include <Arduino.h>
 #include <esp_rom_crc.h>
@@ -28,6 +29,7 @@
 //   D <hex>                -> "K" per line (max 64 bytes; the ack is the flow control), and after the
 //                          last byte "OK F <name>" or "ERR". Written to a temp file, then renamed.
 //   A ...                  -> third-party apps: install, list, remove (src/apps/scripts/appsusb.h)
+//   BATLOG ...             -> timed GPIO4 voltage logging and CSV export (src/core/battery_log.cpp)
 static const char *EVENTS = "/events.csv", *EVENTS_TMP = "/events.tmp";
 static const char *BADGE_TMP = "/badges/upload.tmp";
 static const uint32_t STALL_MS = 3000;  // give up on a transfer that stops halfway
@@ -152,6 +154,11 @@ static void handle(const char *l) {
     if (--remaining == 0) finishEvents();
     return;
   }
+  if (batteryLogUsb(l)) return;
+  if (batteryLogBusy()) {
+    usbSerial().println("ERR BATLOG busy");
+    return;
+  }
 #if UNIDEX_DEV
   if (devUsb(l)) return;  // test build: screenshots and virtual buttons
 #endif
@@ -238,6 +245,7 @@ void usbSyncPoll() {
     lastLineAt = millis();
     powerActivity();  // don't fall asleep mid-transfer
     handle(line);
+    if (batteryLogSending()) return;  // send the CSV without interleaving further commands
     // Send the reply now: after a burst of output a short line can sit in the USB buffer. Asking whether the
     // host is there nudges the data out by itself; flush() only waits once the host has read from us before
     // (on a fresh connection it would throw the reply away instead).

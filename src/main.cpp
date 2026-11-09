@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "apps/apps.h"
 #include "apps/notes/phone.h"
+#include "core/battery_log.h"
 #include "core/clock.h"
 #include "core/devtools.h"
 #include "core/display.h"
@@ -43,6 +44,11 @@ void setup() {
 void loop() {
   usbModePoll();
   if (usbMode) return;
+  if (batteryLogBusy()) {
+    batteryLogPoll();
+    delay(1);
+    return;
+  }
   Event e = inputPoll();
   if (e != Event::None) {
     powerActivity();
@@ -55,6 +61,7 @@ void loop() {
   }
   phoneLanPoll();
   usbSyncPoll();
+  if (batteryLogBusy()) return;
 #if UNIDEX_DEV
   devTick();
 #endif
