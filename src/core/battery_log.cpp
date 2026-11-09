@@ -121,7 +121,8 @@ void recordPoll() {
   }
   const uint32_t elapsed = millis() - phaseAt;
   if (phase == Phase::WaitWall || phase == Phase::WaitBattery) {
-    if (event == Event::BShort && !usbHostActive())
+    // The button confirms the source. The controller can retain its last host state after unplugging.
+    if (event == Event::BShort)
       beginPhase(phase == Phase::WaitWall ? Phase::Wall : Phase::Battery);
     else if (elapsed >= SWITCH_TIMEOUT_MS)
       finish(Phase::Stopped, "Battery log timed out");
@@ -153,7 +154,7 @@ String logPath(const char *id) { return String("/battery-logs/") + id + ".csv"; 
 
 void error(const char *reason) { usbSerial().printf("ERR BATLOG %s\n", reason); }
 
-void start(const char *args) {
+void start(const char *args, bool wallFirst) {
   if (logFile) return error("busy");
   const char *separator = strchr(args, ' ');
   if (!separator || !validId(args, separator - args)) return error("invalid_id");
@@ -180,8 +181,8 @@ void start(const char *args) {
   durationMs = seconds * 1000;
   phoneLanStop();
   netOff();
-  usbSerial().printf("OK BATLOG START %s\n", runId);
-  beginPhase(Phase::Pc);
+  usbSerial().printf("OK BATLOG %s %s\n", wallFirst ? "ARM" : "START", runId);
+  beginPhase(wallFirst ? Phase::WaitWall : Phase::Pc);
 }
 
 void startSend(const char *id) {
@@ -236,7 +237,9 @@ bool batteryLogUsb(const char *line) {
   if (strncmp(line, "BATLOG ", 7) != 0) return false;
   const char *cmd = line + 7;
   if (strncmp(cmd, "START ", 6) == 0) {
-    start(cmd + 6);
+    start(cmd + 6, false);
+  } else if (strncmp(cmd, "ARM ", 4) == 0) {
+    start(cmd + 4, true);
   } else if (strcmp(cmd, "STATUS") == 0) {
     const uint32_t elapsed = logFile ? millis() - phaseAt : 0;
     usbSerial().printf("OK BATLOG STATUS %s %s %lu\n", phaseName(), *runId ? runId : "-", (unsigned long)elapsed);
